@@ -1,4 +1,4 @@
-﻿using MotorControlApp.Configuration;
+using MotorControlApp.Configuration;
 using MotorControlApp.Devices;
 
 namespace MotorControlApp.Forms;
@@ -39,6 +39,7 @@ public class MainForm : Form
 
     // 传感器
     private readonly TextBox[] _sensorBoxes = new TextBox[4];
+    private readonly int[] _zeroOffsets = new int[4];   // 归零偏移（点击"归零校准"时记录当前 raw，显示时减去）
 
     private volatile bool _connecting;
     private volatile bool _disconnecting;
@@ -157,7 +158,8 @@ public class MainForm : Form
         group.Controls.Add(new Label { Text = "ms (0=关闭)", Location = new Point(154, 142), Size = new Size(74, 22), ForeColor = Color.DimGray });
 
         _btnUpdate = new Button { Text = "应用参数", Location = new Point(292, 138), Size = new Size(92, 30) };
-        _btnUpdate.Click += (_, _) => {
+        _btnUpdate.Click += (_, _) =>
+        {
             string? err = ReadAndApplyParams();
             if (err != null) TipForm.Show(this, err, false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
             else TipForm.Show(this, "参数已应用", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
@@ -200,7 +202,7 @@ public class MainForm : Form
     {
         var group = new GroupBox
         {
-            Text = "传感器实时数据（模拟中）",
+            Text = "传感器实时数据",
             Location = new Point(16, 550),
             Size = new Size(408, 248)  // 底部加扫描按钮行
         };
@@ -228,22 +230,44 @@ public class MainForm : Form
             group.Controls.Add(_sensorBoxes[i]);
             group.Controls.Add(new Label
             {
-                Text = "V",
+                Text = "raw",
                 Location = new Point(228, rowY + 4),
-                Size = new Size(30, 22),
+                Size = new Size(40, 22),
                 ForeColor = Color.DimGray
             });
         }
 
-        // 扫描按钮 + 结果标签
+        // 扫描按钮 + 归零校准 + 清除
         var btnScan = new Button
         {
             Text = "总线诊断",
             Location = new Point(16, 190),
-            Size = new Size(110, 32)
+            Size = new Size(100, 32)
         };
         btnScan.Click += (_, _) => SafeRun(ScanAINAndShow, ShowErr);
         group.Controls.Add(btnScan);
+
+        var btnZero = new Button
+        {
+            Text = "归零校准",
+            Location = new Point(124, 190),
+            Size = new Size(100, 32)
+        };
+        btnZero.Click += BtnZeroCal_Click;
+        group.Controls.Add(btnZero);
+
+        var btnClearZero = new Button
+        {
+            Text = "清除零点",
+            Location = new Point(232, 190),
+            Size = new Size(100, 32)
+        };
+        btnClearZero.Click += (_, _) =>
+        {
+            Array.Clear(_zeroOffsets, 0, _zeroOffsets.Length);
+            TipForm.Show(this, "零点已清除", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+        };
+        group.Controls.Add(btnClearZero);
 
         Controls.Add(group);
     }
@@ -331,8 +355,38 @@ public class MainForm : Form
         BeginInvoke(() =>
         {
             for (int i = 0; i < _sensorBoxes.Length && i < e.Values.Count; i++)
-                _sensorBoxes[i].Text = e.Values[i].ToString("F3");
+            {
+                int raw = (int)Math.Round(e.Values[i]);
+                int calibrated = raw - _zeroOffsets[i];
+                _sensorBoxes[i].Text = calibrated.ToString();
+            }
         });
+    }
+
+    /// <summary>归零校准：把当前 4 路 raw 作为零点，之后显示减去该值。</summary>
+    private void BtnZeroCal_Click(object? sender, EventArgs e)
+    {
+        if (_device is not Devices.ZMotionDeviceController zmc)
+        {
+            TipForm.Show(this, "未连接，无法校准", false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            return;
+        }
+
+        var ec = zmc.ReadEC8124AD(1);
+        bool anyOk = false;
+        for (int i = 0; i < ec.Length; i++)
+        {
+            if (ec[i].rc == 0)
+            {
+                _zeroOffsets[i] = (int)Math.Round(ec[i].voltage);   // voltage 存的是 raw 原始码
+                anyOk = true;
+            }
+        }
+
+        if (anyOk)
+            TipForm.Show(this, $"已归零：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}", true, 3000);
+        else
+            TipForm.Show(this, "EC8124 读取失败，未校准", false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
     }
 
     private void SetConnectedButtons(bool connected)

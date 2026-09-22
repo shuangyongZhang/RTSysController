@@ -32,15 +32,15 @@
         },
         "Speed": {
             "Des": "运行速度 mm/s（SetSpeed 参数）",
-            "Value": 100.0
+            "Value": 10000.0
         },
         "Accel": {
             "Des": "加速度 mm/s²（SetAccel 参数）",
-            "Value": 500.0
+            "Value": 5000.0
         },
         "Decel": {
             "Des": "减速度 mm/s²（SetDecel 参数）",
-            "Value": 500.0
+            "Value": 5000.0
         },
         "Sramp": {
             "Des": "S 曲线时间（ms，填 0 关闭）",

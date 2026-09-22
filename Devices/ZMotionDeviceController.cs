@@ -71,6 +71,16 @@ public class ZMotionDeviceController : IDeviceController
                 // 显式使能轴（重要！PAC 控制器不会自动给 EtherCAT 轴使能）
                 ThrowRc(zmcaux.ZAux_Direct_SetAxisEnable(_handle, axis, 1), $"SetAxisEnable({axis},1)");
 
+                // 自动初始化 EC8124 传感器模块（量程 0~5V + 通道使能），失败不阻塞主流程
+                try
+                {
+                    InitEC8124(1, 2);  // rangeMode=2 对应 0~5V（按 EC8124 手册映射，写失败不影响）
+                }
+                catch
+                {
+                    // InitEC8124 中的对象索引（0x2000/0x2002）可能不被当前硬件支持，忽略即可
+                }
+
                 _cts = new CancellationTokenSource();
                 _connected = true;
                 _ = Task.Run(() => SensorLoopAsync(_cts.Token), cancellationToken);
@@ -100,7 +110,7 @@ public class ZMotionDeviceController : IDeviceController
         }
     }
 
-    public void Forward()  => RunMove(1, "前进(+)");
+    public void Forward() => RunMove(1, "前进(+)");
     public void Backward() => RunMove(-1, "后退(-)");
 
     private void RunMove(int dir, string label)
@@ -419,9 +429,9 @@ public class ZMotionDeviceController : IDeviceController
         sb.AppendLine("  读回验证 (NodePdoRead 0x6401 sub1~4):");
         for (int ch = 1; ch <= 4; ch++)
         {
-            var (rc4, v4) = NodePdoReadRaw(node, 0x6401, (uint)ch, 0x03);
-            int signed = (short)(v4 & 0xFFFF);
-            sb.AppendLine($"    ch{ch - 1}: rc={rc4} raw=0x{v4:X4}={v4}  ≈ {signed / 32768f * 10f:F3}V");
+            var (rc4, v4) = NodePdoReadRaw(node, 0x6401, (uint)ch, 0x06);
+            int signed = (int)(v4 & 0xFFFF) - 32768;
+            sb.AppendLine($"    ch{ch - 1}: rc={rc4} raw=0x{v4 & 0xFFFF:X4}=raw{signed}");
         }
 
         return (rc, sb.ToString());
@@ -429,25 +439,24 @@ public class ZMotionDeviceController : IDeviceController
 
     /// <summary>
     /// 读 EC8124 的 4 路 AD（DeviceID=0x8124，对象 0x6401 DT6401 复合类型）。
-    /// 优先 NodePdoRead（PDO 通道），失败降级 SDORead，再失败降级本体 GetAD。
-    /// 返回 [ch0, ch1, ch2, ch3]，换算成 ±10V 电压值（量程由 0x2000 决定）。
+    /// 优先 NodePdoRead（PDO 通道），失败降级 SDORead。
+    /// 硬件量程 ±5V，PDO 声明类型 UINT16：-5V→0, 0V→32768, +5V→65535。
+    /// 返回值已减去硬件零点 32768，范围 -32768~+32767，0V≈0。
     /// </summary>
     public (int rc, float voltage)[] ReadEC8124AD(int node = 1)
     {
+        const uint HW_ZERO = 32768u;   // ±5V 量程下 UINT16 零点
         var result = new (int rc, float voltage)[4];
         for (int ch = 0; ch < 4; ch++)
         {
-            // DT6401: sub=ch+1 对应 ch0~ch3，INT16 (type=3)
-            var (rc, raw) = NodePdoReadRaw(node, 0x6401, (uint)(ch + 1), 0x03);
+            // DT6401: sub=ch+1 对应 ch0~ch3，UINT16（type=6，PDO 声明类型）
+            var (rc, raw) = NodePdoReadRaw(node, 0x6401, (uint)(ch + 1), 0x06);
             if (rc != 0)
-                (rc, raw) = SDOReadRaw(node, 0x6401, (uint)(ch + 1), 0x03);
+                (rc, raw) = SDOReadRaw(node, 0x6401, (uint)(ch + 1), 0x06);
 
-            // 原始码 UINT16 (0~65535)，中间值 32768 对应 0V
-            // 常见量程 ±10V: -32768~+32767 对应 -10V~+10V
-            // 这里先假设 ±10V，用 INT16 有符号解释
-            int signed = (short)(raw & 0xFFFF);  // 强转成有符号 INT16
-            float v = signed / 32768f * 10f;
-            result[ch] = (rc, v);
+            // 硬件零点偏移：UINT 0~65535 → 0V=32768，减到以 0 为中心
+            int signed = (int)(raw & 0xFFFF) - (int)HW_ZERO;
+            result[ch] = (rc, signed);
         }
         return result;
     }
