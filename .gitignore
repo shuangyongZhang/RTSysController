@@ -1,0 +1,18 @@
+# 依赖目录
+node_modules/
+
+# 构建输出
+bin/
+obj/
+
+# 压缩包
+*.zip
+
+# .NET 编译产物
+*.exe
+*.pdb
+*.dll
+*.cache
+
+# 但保留要跟踪的配置文件
+!MotorControl/config.json

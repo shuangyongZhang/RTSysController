@@ -1,0 +1,104 @@
+namespace MotorControlApp.Configuration;
+
+/// <summary>
+/// 对应外部 config.json 的根对象，新增可调参数时在此扩展即可。
+/// </summary>
+public sealed class AppConfig
+{
+    public ConnectionConfig Connection { get; set; } = new();
+
+    public ZMotionConfig ZMotion { get; set; } = new();
+
+    public SensorConfig Sensor { get; set; } = new();
+
+    public UiConfig Ui { get; set; } = new();
+}
+
+/// <summary>连接参数。</summary>
+public sealed class ConnectionConfig
+{
+    /// <summary>true=模拟器；false=正运动控制卡。</summary>
+    public CfgValue<bool> UseSimulator { get; set; } = new() { Value = true };
+
+    /// <summary>连接类型：LOCAL / Ethernet / PCI / Serial。</summary>
+    public CfgValue<string> Type { get; set; } = new() { Value = "LOCAL" };
+
+    /// <summary>连接目标：LOCAL1 / 192.168.0.11 / PCI1 / COM3。</summary>
+    public CfgValue<string> Target { get; set; } = new() { Value = "LOCAL1" };
+
+    /// <summary>连接超时（毫秒）。</summary>
+    public CfgValue<int> TimeoutMs { get; set; } = new() { Value = 3000 };
+}
+
+/// <summary>正运动控制卡参数（ZMotion / zauxdll.dll）。</summary>
+public sealed class ZMotionConfig
+{
+    /// <summary>轴号。</summary>
+    public CfgValue<int> AxisNumber { get; set; } = new() { Value = 0 };
+
+    /// <summary>脉冲当量：1 脉冲 = 多少物理单位（mm/脉冲），SetUnits 参数。</summary>
+    public CfgValue<float> Units { get; set; } = new() { Value = 1.0f };
+
+    /// <summary>最低速度（mm/s），SetLspeed 参数。</summary>
+    public CfgValue<float> Lspeed { get; set; } = new() { Value = 10.0f };
+
+    /// <summary>运行速度（mm/s），SetSpeed 参数。</summary>
+    public CfgValue<float> Speed { get; set; } = new() { Value = 100.0f };
+
+    /// <summary>加速度（mm/s²），SetAccel 参数。</summary>
+    public CfgValue<float> Accel { get; set; } = new() { Value = 500.0f };
+
+    /// <summary>减速度（mm/s²），SetDecel 参数。</summary>
+    public CfgValue<float> Decel { get; set; } = new() { Value = 500.0f };
+
+    /// <summary>S 曲线时间（ms），SetSramp 参数；填 0 关闭 S 曲线。</summary>
+    public CfgValue<float> Sramp { get; set; } = new() { Value = 0.0f };
+
+    /// <summary>
+    /// 轴类型 ATYPE。
+    /// 1 = 本地脉冲/步进轴；
+    /// 65 = EtherCAT 伺服位置模式 CSP；
+    /// 66 = EtherCAT 伺服速度模式 CSV；
+    /// 67 = EtherCAT 伺服力矩模式 CST。
+    /// EtherCAT 总线驱动器必须设 65/66/67，不能用 1！
+    /// </summary>
+    public CfgValue<int> AtType { get; set; } = new() { Value = 65 };
+
+    // ---- 便捷取值 ----
+    public int GetAxisNumber() => AxisNumber.Value;
+    public int GetAtType() => AtType.Value;
+    public float GetUnits() => Units.Value;
+    public float GetLspeed() => Lspeed.Value;
+    public float GetSpeed() => Speed.Value;
+    public float GetAccel() => Accel.Value;
+    public float GetDecel() => Decel.Value;
+    public float GetSramp() => Sramp.Value;
+}
+
+/// <summary>传感器参数。</summary>
+public sealed class SensorConfig
+{
+    /// <summary>轮询间隔（毫秒）。</summary>
+    public CfgValue<int> UpdateIntervalMs { get; set; } = new() { Value = 200 };
+
+    /// <summary>
+    /// 全局 AIN 起始编号。
+    /// PAC 本体一般从 0 开始；EtherCAT 总线模块如果配了 NODE_AIO，
+    /// 起始编号会排在本体之后或按 RTSys 配置分配。
+    /// 在诊断里用 NODE_AIO 检查结果校准这个值。
+    /// </summary>
+    public CfgValue<int> AinStart { get; set; } = new() { Value = 0 };
+
+    /// <summary>实际采集几路 AIN（对应 UI 上显示的通道数）。</summary>
+    public CfgValue<int> AinCount { get; set; } = new() { Value = 4 };
+
+    public int GetUpdateIntervalMs() => UpdateIntervalMs.Value;
+    public int GetAinStart() => AinStart.Value;
+    public int GetAinCount() => AinCount.Value;
+}
+
+public sealed class UiConfig
+{
+    public CfgValue<double> TipDisplaySeconds { get; set; } = new() { Value = 3.0 };
+    public double GetTipDisplaySeconds() => TipDisplaySeconds.Value;
+}

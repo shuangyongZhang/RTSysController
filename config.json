@@ -1,0 +1,74 @@
+﻿{
+    "Connection": {
+        "UseSimulator": {
+            "Des": "true=模拟器；false=正运动控制卡",
+            "Value": false
+        },
+        "Type": {
+            "Des": "连接类型：LOCAL=PAC 本机 / Ethernet=网口 / PCI=独立PCI卡 / Serial=串口",
+            "Value": "Ethernet"
+        },
+        "Target": {
+            "Des": "连接目标：LOCAL1 / 192.168.0.11 / PCI1 / COM3",
+            "Value": "192.168.0.11"
+        },
+        "TimeoutMs": {
+            "Des": "连接超时（毫秒）",
+            "Value": 3000
+        }
+    },
+    "ZMotion": {
+        "AxisNumber": {
+            "Des": "轴号（0,1,2...）",
+            "Value": 0
+        },
+        "Units": {
+            "Des": "脉冲当量：1 脉冲 = 多少 mm（SetUnits 参数）",
+            "Value": 1.0
+        },
+        "Lspeed": {
+            "Des": "最低速度 mm/s（SetLspeed 参数）",
+            "Value": 10.0
+        },
+        "Speed": {
+            "Des": "运行速度 mm/s（SetSpeed 参数）",
+            "Value": 100.0
+        },
+        "Accel": {
+            "Des": "加速度 mm/s²（SetAccel 参数）",
+            "Value": 500.0
+        },
+        "Decel": {
+            "Des": "减速度 mm/s²（SetDecel 参数）",
+            "Value": 500.0
+        },
+        "Sramp": {
+            "Des": "S 曲线时间（ms，填 0 关闭）",
+            "Value": 0.0
+        },
+        "AtType": {
+            "Des": "轴类型：1=本地脉冲 65=EtherCAT位置CSP 66=速度CSV 67=力矩CST",
+            "Value": 65
+        }
+    },
+    "Sensor": {
+        "UpdateIntervalMs": {
+            "Des": "传感器轮询间隔（毫秒）",
+            "Value": 200
+        },
+        "AinStart": {
+            "Des": "全局 AIN 起始编号（诊断确认本体 AIN[1]=2.000V 有值；EC8124 总线 AIN 需 SDO 直接读）",
+            "Value": 1
+        },
+        "AinCount": {
+            "Des": "采集几路 AIN（对应 UI 上显示的通道数）",
+            "Value": 4
+        }
+    },
+    "Ui": {
+        "TipDisplaySeconds": {
+            "Des": "Tips 显示时长（秒）",
+            "Value": 3.0
+        }
+    }
+}
