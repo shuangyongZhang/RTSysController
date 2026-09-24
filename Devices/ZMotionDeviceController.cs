@@ -20,6 +20,7 @@ public class ZMotionDeviceController : IDeviceController
     private bool _disposed;
     private CancellationTokenSource? _cts;
     private bool _wasOutOfLimit;      // 限位监控：上一轮是否越界（用于只提示一次）
+    private int _connectedAxis = -1;     // 本次连接配置的轴号（防止在线改轴号后把参数下发到其他轴）
 
     public ZMotionDeviceController(AppConfig config)
     {
@@ -30,7 +31,6 @@ public class ZMotionDeviceController : IDeviceController
     public bool IsConnected => _connected;
     public event EventHandler<SensorDataEventArgs>? SensorDataReceived;
     public event EventHandler<string>? LimitTriggered;
-    public event EventHandler? Disconnected;
 
     public Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
     {
@@ -121,6 +121,7 @@ public class ZMotionDeviceController : IDeviceController
 
                 // 使能轴
                 ThrowRc(zmcaux.ZAux_Direct_SetAxisEnable(_handle, axis, 1), $"SetAxisEnable({axis},1)");
+                _connectedAxis = axis;    // 记录本次连接配置的轴号（ApplyMotionParams 校验用）
 
                 _cts = new CancellationTokenSource();
                 _connected = true;
@@ -186,6 +187,31 @@ public class ZMotionDeviceController : IDeviceController
         int rc = zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref dpos);
         ThrowRc(rc, $"GetDpos({axis})");
         return dpos;
+    }
+
+    /// <summary>
+    /// 连接状态下即时下发轴运动参数（脉冲当量/最低速度/速度/加减速度/S曲线）。
+    /// 这些参数之前只在 ConnectAsync 里下发一次，"应用参数"按钮只更新了本地 config，
+    /// 导致必须断开重连才生效 —— 现在点击"应用参数"时立即调用本方法下发到控制器。
+    /// 不含 Atype/轴使能/软限位：轴类型不宜在线切换，软限位有独立的"应用限位"按钮。
+    /// </summary>
+    public void ApplyMotionParams(float rate = 0)
+    {
+        EnsureConnected();
+        ZMotionConfig z = _cfg.ZMotion;
+        int axis = z.GetAxisNumber();
+        if (axis != _connectedAxis)
+            throw new InvalidOperationException($"轴号已从 {_connectedAxis} 改为 {axis}，需断开重连后新轴号才生效");
+        ThrowRc(zmcaux.ZAux_Direct_SetUnits(_handle, axis, z.GetUnits()), $"SetUnits({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetLspeed(_handle, axis, z.GetLspeed()), $"SetLspeed({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetSpeed(_handle, axis, z.GetSpeed()), $"SetSpeed({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetAccel(_handle, axis, z.GetAccel()), $"SetAccel({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetDecel(_handle, axis, z.GetDecel()), $"SetDecel({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetSramp(_handle, axis, z.GetSramp()), $"SetSramp({axis})");
+        if (rate != 0)
+        {
+            ApplySoftLimits(_cfg.ZMotion.SoftLimitPos.Value, _cfg.ZMotion.SoftLimitNeg.Value);
+        }
     }
 
     /// <summary>动态应用软限位（连接后也可改）。</summary>

@@ -32,15 +32,15 @@
         },
         "Speed": {
             "Des": "运行速度 mm/s（SetSpeed 参数）",
-            "Value": 5000.0
+            "Value": 50000.0
         },
         "Accel": {
             "Des": "加速度 mm/s²（SetAccel 参数）",
-            "Value": 1000.0
+            "Value": 5000.0
         },
         "Decel": {
             "Des": "减速度 mm/s²（SetDecel 参数）",
-            "Value": 1000.0
+            "Value": 5000.0
         },
         "Sramp": {
             "Des": "S 曲线时间（ms，填 0 关闭）",
@@ -82,7 +82,16 @@
         },
         "K": {
             "Des": "K",
-            "Value": 50
+            "Value": 0
+        },
+        "ZeroOffsets": {
+            "Des": "4 路传感器归零校准值（raw 原始码），点击归零校准自动写入，清除零点写回 0",
+            "Value": [
+                0,
+                0,
+                0,
+                0
+            ]
         }
     },
     "Ui": {

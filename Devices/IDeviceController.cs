@@ -13,11 +13,6 @@ public interface IDeviceController : IDisposable
     /// <summary>4 路传感器数据实时上报（注意：可能在后台线程触发）。</summary>
     event EventHandler<SensorDataEventArgs>? SensorDataReceived;
 
-    /// <summary>实时限位监控触发停止时上报（参数为提示文本，注意：可能在后台线程触发）。</summary>
-    event EventHandler<string>? LimitTriggered;
-
-    /// <summary>设备意外断开时触发。</summary>
-    event EventHandler? Disconnected;
 
     /// <summary>按当前配置连接设备（连接参数均来自 config.json，无端口入参）。返回是否连接成功。</summary>
     Task<bool> ConnectAsync(CancellationToken cancellationToken = default);

@@ -109,12 +109,36 @@ public sealed class SensorConfig
     /// <summary>K。</summary>
     public CfgValue<double> K { get; set; } = new() { Value = 50.0 };
 
+    /// <summary>
+    /// 4 路传感器归零校准值（raw 原始码）。
+    /// 点击"归零校准"时记录当前 4 路 raw，显示时减去该值。
+    /// 持久化到 config.json，下次启动自动加载。
+    /// </summary>
+    public CfgValue<int[]> ZeroOffsets { get; set; } = new() { Value = new int[4] };
+
     public int GetUpdateIntervalMs() => UpdateIntervalMs.Value;
     public int GetAinStart() => AinStart.Value;
     public int GetAinCount() => AinCount.Value;
     public double GetAdcPerGram() => AdcPerGram.Value;
     public double GetGravity() => Gravity.Value;
     public double GetK() => K.Value;
+
+    /// <summary>读取 4 路归零偏移（长度不足时自动补齐为 4）。</summary>
+    public int[] GetZeroOffsets()
+    {
+        int[] src = ZeroOffsets.Value ?? Array.Empty<int>();
+        var dst = new int[4];
+        Array.Copy(src, dst, Math.Min(src.Length, 4));
+        return dst;
+    }
+
+    /// <summary>写回 4 路归零偏移到 config（不自动落盘，由调用方 TrySave）。</summary>
+    public void SetZeroOffsets(int[] offsets)
+    {
+        var dst = new int[4];
+        if (offsets != null) Array.Copy(offsets, dst, Math.Min(offsets.Length, 4));
+        ZeroOffsets.Value = dst;
+    }
 }
 
 public sealed class UiConfig

@@ -54,10 +54,14 @@ public class MainForm : Form
     private volatile bool _connecting;
     private volatile bool _disconnecting;
 
+    private float _oldUnits;
     public MainForm(AppConfig config)
     {
         _config = config;
         _useSimulator = config.Connection.UseSimulator.Value;
+        // 加载上次保存的归零校准值
+        _zeroOffsets = config.Sensor.GetZeroOffsets();
+        _oldUnits = config.ZMotion.Units.Value;
         BuildUi();
     }
 
@@ -171,9 +175,38 @@ public class MainForm : Form
         _btnUpdate = new Button { Text = "应用参数", Location = new Point(292, rowY4 - 3), Size = new Size(92, 28) };
         _btnUpdate.Click += (_, _) =>
         {
+            float rate = 0;
+            float newUnits = float.Parse(_txtUnits.Text);
+            if (_oldUnits != newUnits)
+            {
+                rate = _oldUnits / newUnits;
+                _oldUnits = newUnits;
+                _config.ZMotion.SoftLimitNeg.Value *= rate;
+                _config.ZMotion.SoftLimitPos.Value *= rate;
+                _txtSoftPos.Text = _config.ZMotion.SoftLimitPos.Value.ToString("0.#");
+                _txtSoftNeg.Text = _config.ZMotion.SoftLimitNeg.Value.ToString("0.#");
+            }
             string? err = ReadAndApplyParams();
-            if (err != null) TipForm.Show(this, err, false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
-            else TipForm.Show(this, "参数已应用", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            if (err != null) { TipForm.Show(this, err, false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000)); return; }
+
+            // 已连接：立即把参数下发到控制器（之前只更新本地 config，必须断开重连才生效）
+            if (_device is ZMotionDeviceController zmc && zmc.IsConnected)
+            {
+                try
+                {
+                    zmc.ApplyMotionParams(rate);
+                }
+                catch (Exception ex)
+                {
+                    TipForm.Show(this, $"参数下发失败：{ex.Message}", false, 4000);
+                    return;
+                }
+                TipForm.Show(this, "参数已下发到控制器", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            }
+            else
+            {
+                TipForm.Show(this, "参数已保存，连接时生效", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            }
         };
         group.Controls.Add(_btnUpdate);
 
@@ -332,7 +365,10 @@ public class MainForm : Form
         btnClearZero.Click += (_, _) =>
         {
             Array.Clear(_zeroOffsets, 0, _zeroOffsets.Length);
-            TipForm.Show(this, "零点已清除", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            // 同步清除 config 中的归零值并落盘
+            _config.Sensor.SetZeroOffsets(_zeroOffsets);
+            ConfigService.TrySave(_config);
+            TipForm.Show(this, "零点已清除并保存", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
         };
         group.Controls.Add(btnClearZero);
 
@@ -369,8 +405,6 @@ public class MainForm : Form
             _device?.Dispose();
             _device = DeviceFactory.Create(_config);
             _device.SensorDataReceived += Device_SensorDataReceived;
-            _device.Disconnected += Device_Disconnected;
-            _device.LimitTriggered += Device_LimitTriggered;
 
             await _device.ConnectAsync();
 
@@ -441,6 +475,7 @@ public class MainForm : Form
             {
                 int raw = (int)Math.Round(e.Values[i]);
                 int calibrated = raw - _zeroOffsets[i];
+                calibrated = Math.Max(0, calibrated);
                 _sensorRawBoxes[i].Text = calibrated.ToString();
 
                 // 1 ADC ≈ 15.26 g → kg = raw * 15.26 / 1000
@@ -486,7 +521,12 @@ public class MainForm : Form
         }
 
         if (anyOk)
-            TipForm.Show(this, $"已归零：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}", true, 3000);
+        {
+            // 持久化归零校准值，下次启动自动加载
+            _config.Sensor.SetZeroOffsets(_zeroOffsets);
+            ConfigService.TrySave(_config);
+            TipForm.Show(this, $"已归零并保存：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}", true, 3000);
+        }
         else
             TipForm.Show(this, "EC8124 读取失败，未校准", false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
     }
@@ -555,14 +595,13 @@ public class MainForm : Form
         // (2) NODE_AIO 映射（关键！总线 AIN 必须映射到全局编号才能被 GetAD 读到）
         sb.AppendLine("=== NODE_AIO 映射 ===");
         var aioMap = zmc.ReadNodeAIOMap();
-        bool aioOk = true;
         foreach (var m in aioMap)
         {
             string status;
             if (m.cmdAin.StartsWith("ERR"))
-            { status = $"BASIC命令失败：{m.cmdAin}"; aioOk = false; }
+            { status = $"BASIC命令失败：{m.cmdAin}"; }
             else if (m.ainCount > 0 && m.ainBase <= 0)
-            { status = $"AIN有{m.ainCount}路但起始编号=0（可能和本体冲突）"; aioOk = false; }
+            { status = $"AIN有{m.ainCount}路但起始编号=0（可能和本体冲突）"; }
             else if (m.ainCount > 0)
             { status = $"AIN已映射到全局{m.ainBase}~{m.ainBase + m.ainCount - 1}"; }
             else
@@ -607,7 +646,11 @@ public class MainForm : Form
         else
         {
             foreach (var c in alive)
-                sb.AppendLine($"  AIN[{c.ionum:D2}] = {c.value.Value:F3}");
+            {
+                if (c.value == null) sb.AppendLine($"  AIN[{c.ionum:D2}] = NULL");
+                else
+                    sb.AppendLine($"  AIN[{c.ionum:D2}] = {c.value.Value:F3}");
+            }
         }
         sb.AppendLine();
 
@@ -668,6 +711,8 @@ public class MainForm : Form
         if (!TryParseInt(_txtTimeout.Text, out int timeout) || timeout <= 0) return "超时必须 > 0";
         if (!TryParseFloat(_txtWeight.Text, out float weight) && !string.IsNullOrEmpty(_txtWeight.Text)) return "砝码输入错误";
         if (!TryParseFloat(_txtGravity.Text, out float gravity) || gravity <= 0) return "重力加速度必须 > 0";
+        if (!TryParseInt(_txtSoftPos.Text, out int softPos) || softPos <= 0) return "软正位置必须 > 0";
+        if (!TryParseInt(_txtSoftNeg.Text, out int softNeg) || softNeg >= 0) return "软负位置必须 < 0";
 
         _config.Connection.Type.Value = "Ethernet";  // 固定网口连接
         _config.Connection.Target.Value = _txtTarget.Text.Trim();
@@ -681,6 +726,8 @@ public class MainForm : Form
         _config.ZMotion.Sramp.Value = sramp;
         _config.Sensor.K.Value = string.IsNullOrEmpty(_txtWeight.Text) ? 0 : weight;
         _config.Sensor.Gravity.Value = gravity;
+        _config.ZMotion.SoftLimitPos.Value = softPos;
+        _config.ZMotion.SoftLimitNeg.Value = softNeg;
         return null;
     }
 

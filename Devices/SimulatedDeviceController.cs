@@ -33,8 +33,6 @@ public sealed class SimulatedDeviceController : IDeviceController
 
     public event EventHandler? Disconnected;
 
-    public event EventHandler<string>? LimitTriggered;
-
     public Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
     {
         // 模拟连接耗时
