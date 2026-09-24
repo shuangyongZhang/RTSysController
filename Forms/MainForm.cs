@@ -46,7 +46,7 @@ public class MainForm : Form
     private readonly TextBox[] _sensorRawBoxes = new TextBox[4];
     private readonly TextBox[] _sensorKgBoxes = new TextBox[4];
     private readonly TextBox[] _sensorNBoxes = new TextBox[4];
-    private readonly TextBox[] _sensorKBoxes  = new TextBox[4];
+    private readonly TextBox[] _sensorKBoxes = new TextBox[4];
     private readonly int[] _zeroOffsets = new int[4];   // 归零偏移（点击"归零校准"时记录当前 raw，显示时减去）
     private TextBox _txtGravity = null!;
     private TextBox _txtWeight = null!;   // 砝码重量 kg（用于算 K 标定系数，不存 config）
@@ -255,9 +255,9 @@ public class MainForm : Form
         // 5 列布局：# | raw | kg | N | K   面板宽 480
         const int colCh = 16;
         const int colRaw = 62;     // 16 + 40 + 6
-        const int colKg  = 164;    // 62 + 96 + 6
-        const int colN   = 266;    // 164 + 96 + 6
-        const int colK   = 368;    // 266 + 96 + 6
+        const int colKg = 164;    // 62 + 96 + 6
+        const int colN = 266;    // 164 + 96 + 6
+        const int colK = 368;    // 266 + 96 + 6
         const int wBox = 96;
         const int wChLabel = 40;
         const int rowH = 34;
@@ -266,11 +266,11 @@ public class MainForm : Form
 
         // 列标题（显示单位）——从 startY 起，占 headerH 高度
         int hdrY = startY;
-        group.Controls.Add(new Label { Text = "#",  Location = new Point(colCh + 12,  hdrY), Size = new Size(wChLabel, headerH), ForeColor = Color.DimGray });
-        group.Controls.Add(new Label { Text = "raw", Location = new Point(colRaw + 2,  hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
-        group.Controls.Add(new Label { Text = "kg",  Location = new Point(colKg + 2,   hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
-        group.Controls.Add(new Label { Text = "N",   Location = new Point(colN + 2,    hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
-        group.Controls.Add(new Label { Text = "K",   Location = new Point(colK + 2,    hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "#", Location = new Point(colCh + 12, hdrY), Size = new Size(wChLabel, headerH), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "raw", Location = new Point(colRaw + 2, hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "kg", Location = new Point(colKg + 2, hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "N", Location = new Point(colN + 2, hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "K", Location = new Point(colK + 2, hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
 
         // 数据行——紧接在列标题下方，不重叠
         for (int i = 0; i < 4; i++)
@@ -285,9 +285,9 @@ public class MainForm : Form
                 ForeColor = Color.DimGray
             });
             _sensorRawBoxes[i] = new TextBox { Location = new Point(colRaw, rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
-            _sensorKgBoxes[i]  = new TextBox { Location = new Point(colKg,  rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
-            _sensorNBoxes[i]   = new TextBox { Location = new Point(colN,   rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
-            _sensorKBoxes[i]   = new TextBox { Location = new Point(colK,   rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
+            _sensorKgBoxes[i] = new TextBox { Location = new Point(colKg, rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
+            _sensorNBoxes[i] = new TextBox { Location = new Point(colN, rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
+            _sensorKBoxes[i] = new TextBox { Location = new Point(colK, rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
             group.Controls.Add(_sensorRawBoxes[i]);
             group.Controls.Add(_sensorKgBoxes[i]);
             group.Controls.Add(_sensorNBoxes[i]);
@@ -297,7 +297,7 @@ public class MainForm : Form
         // 砝码输入行
         int weightY = startY + headerH + 2 + 4 * rowH + 6;
         group.Controls.Add(new Label { Text = "砝码 =", Location = new Point(colCh, weightY + 4), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
-        _txtWeight = new TextBox { Location = new Point(colCh + 58, weightY + 2), Size = new Size(64, 26), Text = "50", TextAlign = HorizontalAlignment.Right };
+        _txtWeight = new TextBox { Location = new Point(colCh + 58, weightY + 2), Size = new Size(64, 26), Text = _config.Sensor.K.Value.ToString("0.##"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtWeight);
         group.Controls.Add(new Label { Text = "kg  (K = 砝码×g / N)", Location = new Point(colCh + 126, weightY + 4), Size = new Size(240, 22), ForeColor = Color.DimGray });
 
@@ -666,6 +666,8 @@ public class MainForm : Form
         if (!TryParseFloat(_txtLspeed.Text, out float lspeed) || lspeed <= 0) return "最低速度必须 > 0";
         if (!TryParseFloat(_txtSramp.Text, out float sramp) || sramp < 0) return "S 曲线必须 >= 0";
         if (!TryParseInt(_txtTimeout.Text, out int timeout) || timeout <= 0) return "超时必须 > 0";
+        if (!TryParseFloat(_txtWeight.Text, out float weight) && !string.IsNullOrEmpty(_txtWeight.Text)) return "砝码输入错误";
+        if (!TryParseFloat(_txtGravity.Text, out float gravity) || gravity <= 0) return "重力加速度必须 > 0";
 
         _config.Connection.Type.Value = "Ethernet";  // 固定网口连接
         _config.Connection.Target.Value = _txtTarget.Text.Trim();
@@ -677,6 +679,8 @@ public class MainForm : Form
         _config.ZMotion.Decel.Value = decel;
         _config.ZMotion.Lspeed.Value = lspeed;
         _config.ZMotion.Sramp.Value = sramp;
+        _config.Sensor.K.Value = string.IsNullOrEmpty(_txtWeight.Text) ? 0 : weight;
+        _config.Sensor.Gravity.Value = gravity;
         return null;
     }
 

@@ -106,11 +106,15 @@ public sealed class SensorConfig
     /// <summary>重力加速度 g（m/s²），用于 kg→N 换算。默认 10。</summary>
     public CfgValue<double> Gravity { get; set; } = new() { Value = 10.0 };
 
+    /// <summary>K。</summary>
+    public CfgValue<double> K { get; set; } = new() { Value = 50.0 };
+
     public int GetUpdateIntervalMs() => UpdateIntervalMs.Value;
     public int GetAinStart() => AinStart.Value;
     public int GetAinCount() => AinCount.Value;
     public double GetAdcPerGram() => AdcPerGram.Value;
     public double GetGravity() => Gravity.Value;
+    public double GetK() => K.Value;
 }
 
 public sealed class UiConfig

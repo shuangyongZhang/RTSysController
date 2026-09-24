@@ -1,0 +1,8 @@
+{
+  "permission_rules": [
+    {
+      "tool": "Bash(dir *)",
+      "decision": "allow"
+    }
+  ]
+}

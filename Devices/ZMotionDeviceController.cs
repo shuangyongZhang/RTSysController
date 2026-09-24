@@ -119,17 +119,34 @@ public class ZMotionDeviceController : IDeviceController
                 ThrowRc(zmcaux.ZAux_Direct_SetFsLimit(_handle, axis, z.GetSoftLimitPos()), $"SetPosLimit({axis},{z.GetSoftLimitPos()})");
                 ThrowRc(zmcaux.ZAux_Direct_SetRsLimit(_handle, axis, z.GetSoftLimitNeg()), $"SetNegPosLimit({axis},{z.GetSoftLimitNeg()})");
 
-                // 停止模式：mode=2 取消当前 + 缓冲运动
-
                 // 使能轴
                 ThrowRc(zmcaux.ZAux_Direct_SetAxisEnable(_handle, axis, 1), $"SetAxisEnable({axis},1)");
 
-                // ⚠️ 删掉之前瞎写的 InitEC8124（SDOWrite 0x2000/0x2002 是猜的，rc 全=30003）
-                // EC8124 的 AD 通道使能已经由上面的 NODE_AIO 映射自动完成，无需额外 SDO 配置
-
                 _cts = new CancellationTokenSource();
                 _connected = true;
-                _ = Task.Run(() => SensorLoopAsync(_cts.Token), cancellationToken);
+
+                // ========== EC8124 AD 模块初始化（量程 ±5V + 通道使能） ==========
+                // EC8124 的量程(0x2000)/通道使能(0x2002)是运行时 SDO 参数，不会持久化：
+                // 硬件断电重启会丢，Ecat_Init 的 SLOT_STOP→SLOT_START 重新枚举总线也会丢。
+                // 之前只有"总线诊断"按钮(ScanAINAndShow→InitEC8124)会写这两个参数，
+                // 所以每次重启硬件后传感器无值、手动点一次诊断才恢复 —— 现在连接时自动补上。
+                // 失败不阻断连接：读不到总线 AD 时 SensorLoopAsync 会自动降级到本体 GetAD。
+                for (int attempt = 0; attempt < 5; attempt++)
+                {
+                    Thread.Sleep(500);      // 总线刚启动时从站可能尚未就绪，稍等再写 SDO
+                    try
+                    {
+                        InitEC8124(1, 1);   // node=1、量程 ±5V，与"总线诊断"按钮里的调用完全一致
+                        if (ReadEC8124AD(1).Count(e => e.rc == 0) >= 2)
+                            break;          // 至少 2 路读通即初始化成功
+                    }
+                    catch { /* SDO 暂时不通则重试 */ }
+                }
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(1500, cancellationToken: _cts.Token);
+                    await SensorLoopAsync(_cts.Token);
+                }, cancellationToken);
                 _ = Task.Run(() => LimitMonitorLoopAsync(_cts.Token), cancellationToken);
                 return true;
             }
