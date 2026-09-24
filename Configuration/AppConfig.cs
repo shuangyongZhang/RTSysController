@@ -54,6 +54,12 @@ public sealed class ZMotionConfig
     /// <summary>S 曲线时间（ms），SetSramp 参数；填 0 关闭 S 曲线。</summary>
     public CfgValue<float> Sramp { get; set; } = new() { Value = 0.0f };
 
+    /// <summary>正向软限位坐标（物理单位 mm），SetPosLimit 参数。default +500000（相当于不生效）。</summary>
+    public CfgValue<float> SoftLimitPos { get; set; } = new() { Value = 500000.0f };
+
+    /// <summary>负向软限位坐标（物理单位 mm），SetNegPosLimit 参数。default -500000（相当于不生效）。</summary>
+    public CfgValue<float> SoftLimitNeg { get; set; } = new() { Value = -500000.0f };
+
     /// <summary>
     /// 轴类型 ATYPE。
     /// 1 = 本地脉冲/步进轴；
@@ -73,6 +79,8 @@ public sealed class ZMotionConfig
     public float GetAccel() => Accel.Value;
     public float GetDecel() => Decel.Value;
     public float GetSramp() => Sramp.Value;
+    public float GetSoftLimitPos() => SoftLimitPos.Value;
+    public float GetSoftLimitNeg() => SoftLimitNeg.Value;
 }
 
 /// <summary>传感器参数。</summary>
@@ -92,9 +100,17 @@ public sealed class SensorConfig
     /// <summary>实际采集几路 AIN（对应 UI 上显示的通道数）。</summary>
     public CfgValue<int> AinCount { get; set; } = new() { Value = 4 };
 
+    /// <summary>换算系数：1 ADC ≈ 多少克（传感器灵敏度）。默认 15.26 g/ADC。</summary>
+    public CfgValue<double> AdcPerGram { get; set; } = new() { Value = 15.26 };
+
+    /// <summary>重力加速度 g（m/s²），用于 kg→N 换算。默认 10。</summary>
+    public CfgValue<double> Gravity { get; set; } = new() { Value = 10.0 };
+
     public int GetUpdateIntervalMs() => UpdateIntervalMs.Value;
     public int GetAinStart() => AinStart.Value;
     public int GetAinCount() => AinCount.Value;
+    public double GetAdcPerGram() => AdcPerGram.Value;
+    public double GetGravity() => Gravity.Value;
 }
 
 public sealed class UiConfig

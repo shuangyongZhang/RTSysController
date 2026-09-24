@@ -1,5 +1,6 @@
 using cszmcaux;
 using MotorControlApp.Configuration;
+using System.Text;
 
 namespace MotorControlApp.Devices;
 
@@ -18,6 +19,7 @@ public class ZMotionDeviceController : IDeviceController
     private volatile bool _connected;
     private bool _disposed;
     private CancellationTokenSource? _cts;
+    private bool _wasOutOfLimit;      // 限位监控：上一轮是否越界（用于只提示一次）
 
     public ZMotionDeviceController(AppConfig config)
     {
@@ -27,6 +29,7 @@ public class ZMotionDeviceController : IDeviceController
 
     public bool IsConnected => _connected;
     public event EventHandler<SensorDataEventArgs>? SensorDataReceived;
+    public event EventHandler<string>? LimitTriggered;
     public event EventHandler? Disconnected;
 
     public Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
@@ -56,6 +59,50 @@ public class ZMotionDeviceController : IDeviceController
                     throw new InvalidOperationException($"ZAux_FastOpen 失败 rc={rc}（type={type} target={conn.Target.Value}）");
                 _handle = handle;
 
+                // ========== EtherCAT 总线初始化 ==========
+                // 参考正运动官方例程8-总线控制运动 的做法：
+                //   控制器 ROM 里已经通过 RTSys 下载了包含 Ecat_Init 的 BASIC 程序（昨天下载过）
+                //   直接用 ZAux_Execute 启动任务1跑总线初始化，response length 传 0（写命令不需要返回值）
+                //   然后轮询 BASIC 全局变量 Bus_InitStatus 等它变成 1=成功
+                try
+                {
+                    StringBuilder rbuf = new StringBuilder(4096);
+                    int r2 = zmcaux.ZAux_Execute(_handle, "RUNTASK 1,Ecat_Init", rbuf, 0);
+                    if (r2 != 0)
+                        throw new InvalidOperationException($"RUNTASK 失败 rc={r2}。" +
+                            (r2 == 2033 ? "控制器 ROM 里没有 Ecat_Init 函数，请在 RTSys 里重新下载 ZPJ 项目包到 ROM" : ""));
+                }
+                catch (InvalidOperationException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException($"启动总线初始化失败：{ex.Message}。" +
+                        "请确认控制器已上电，且 RTSys 没有占用网口连接。");
+                }
+
+                // 轮询 Bus_InitStatus，最多等 20s
+                int initStatus = -1;
+                for (int wait = 0; wait < 200; wait++)
+                {
+                    Thread.Sleep(100);
+                    try
+                    {
+                        float fstatus = -1;
+                        zmcaux.ZAux_Direct_GetUserVar(_handle, "Bus_InitStatus", ref fstatus);
+                        initStatus = (int)fstatus;
+                    }
+                    catch { continue; }
+
+                    if (initStatus == 1) break;      // 成功
+                    if (initStatus == 2) break;      // 节点数不符（总线配置和实际硬件不一致）
+                }
+                if (initStatus != 1 && initStatus != 2)
+                    throw new InvalidOperationException(
+                        $"总线初始化未完成（Bus_InitStatus={initStatus}），" +
+                        "请在 RTSys 里确认总线配置与实际硬件一致，且 ECAT初始化.Bas 已下载到控制器。");
+
                 // 配置轴参数（参考例程 Form1.OnStart）
                 ZMotionConfig z = _cfg.ZMotion;
                 int axis = z.GetAxisNumber();
@@ -68,22 +115,22 @@ public class ZMotionDeviceController : IDeviceController
                 ThrowRc(zmcaux.ZAux_Direct_SetDecel(_handle, axis, z.GetDecel()), $"SetDecel({axis})");
                 ThrowRc(zmcaux.ZAux_Direct_SetSramp(_handle, axis, z.GetSramp()), $"SetSramp({axis})");
 
-                // 显式使能轴（重要！PAC 控制器不会自动给 EtherCAT 轴使能）
+                // 软限位（P0 防爆冲）
+                ThrowRc(zmcaux.ZAux_Direct_SetFsLimit(_handle, axis, z.GetSoftLimitPos()), $"SetPosLimit({axis},{z.GetSoftLimitPos()})");
+                ThrowRc(zmcaux.ZAux_Direct_SetRsLimit(_handle, axis, z.GetSoftLimitNeg()), $"SetNegPosLimit({axis},{z.GetSoftLimitNeg()})");
+
+                // 停止模式：mode=2 取消当前 + 缓冲运动
+
+                // 使能轴
                 ThrowRc(zmcaux.ZAux_Direct_SetAxisEnable(_handle, axis, 1), $"SetAxisEnable({axis},1)");
 
-                // 自动初始化 EC8124 传感器模块（量程 0~5V + 通道使能），失败不阻塞主流程
-                try
-                {
-                    InitEC8124(1, 2);  // rangeMode=2 对应 0~5V（按 EC8124 手册映射，写失败不影响）
-                }
-                catch
-                {
-                    // InitEC8124 中的对象索引（0x2000/0x2002）可能不被当前硬件支持，忽略即可
-                }
+                // ⚠️ 删掉之前瞎写的 InitEC8124（SDOWrite 0x2000/0x2002 是猜的，rc 全=30003）
+                // EC8124 的 AD 通道使能已经由上面的 NODE_AIO 映射自动完成，无需额外 SDO 配置
 
                 _cts = new CancellationTokenSource();
                 _connected = true;
                 _ = Task.Run(() => SensorLoopAsync(_cts.Token), cancellationToken);
+                _ = Task.Run(() => LimitMonitorLoopAsync(_cts.Token), cancellationToken);
                 return true;
             }
             catch (DllNotFoundException ex)
@@ -113,10 +160,41 @@ public class ZMotionDeviceController : IDeviceController
     public void Forward() => RunMove(1, "前进(+)");
     public void Backward() => RunMove(-1, "后退(-)");
 
+    /// <summary>读取当前逻辑位置（Dpos）。未连接抛 InvalidOperationException。</summary>
+    public float GetCurrentDpos()
+    {
+        EnsureConnected();
+        int axis = _cfg.ZMotion.GetAxisNumber();
+        float dpos = 0;
+        int rc = zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref dpos);
+        ThrowRc(rc, $"GetDpos({axis})");
+        return dpos;
+    }
+
+    /// <summary>动态应用软限位（连接后也可改）。</summary>
+    public void ApplySoftLimits(float posLimit, float negLimit)
+    {
+        EnsureConnected();
+        int axis = _cfg.ZMotion.GetAxisNumber();
+        ThrowRc(zmcaux.ZAux_Direct_SetFsLimit(_handle, axis, posLimit), $"SetPosLimit({axis},{posLimit})");
+        ThrowRc(zmcaux.ZAux_Direct_SetRsLimit(_handle, axis, negLimit), $"SetNegPosLimit({axis},{negLimit})");
+        _cfg.ZMotion.SoftLimitPos.Value = posLimit;
+        _cfg.ZMotion.SoftLimitNeg.Value = negLimit;
+    }
+
     private void RunMove(int dir, string label)
     {
         EnsureConnected();
         int axis = _cfg.ZMotion.GetAxisNumber();
+
+        // (0) 防爆冲：运动前 Dpos 越界拦截（软限位之外再套一层，双保险）
+        float dpos = GetCurrentDpos();
+        float posLim = _cfg.ZMotion.GetSoftLimitPos();
+        float negLim = _cfg.ZMotion.GetSoftLimitNeg();
+        if (dir > 0 && dpos >= posLim)
+            throw new InvalidOperationException($"已到正向软限位 {posLim:F1}，无法{label}（当前 Dpos={dpos:F1}）");
+        if (dir < 0 && dpos <= negLim)
+            throw new InvalidOperationException($"已到负向软限位 {negLim:F1}，无法{label}（当前 Dpos={dpos:F1}）");
 
         // (1) Vmove 前快照
         int beforeIdle = 0;
@@ -145,10 +223,27 @@ public class ZMotionDeviceController : IDeviceController
             zmcaux.ZAux_Direct_GetAxisEnable(_handle, axis, ref enable);
             throw new InvalidOperationException(
                 $"{label} 指令已发出但电机无响应（rc=0）。\n" +
-                $"轴{axis} 状态：使能={enable} 状态字=0x{status:X8}\n" +
+                $"轴{axis} 状态：使能={enable} 状态字=0x{status:X8}（{DescribeAxisStatus(status)}）\n" +
                 $"IfIdle={afterIdle}(0=运行,1=停止) VpSpeed={afterSpeed:F1} Dpos={afterDpos:F1}\n" +
                 $"→ 可能轴号不对 / RTSys 已占用 EtherCAT 轴 / 伺服未使能");
         }
+    }
+
+    /// <summary>按 ZMC 轴状态字位定义解码：bit4=正向硬限位 bit5=负向硬限位 bit22=伺服报警。</summary>
+    private static string DescribeAxisStatus(int axisstate)
+    {
+        if (axisstate == 0) return "正常";
+        var parts = new List<string>();
+        if (((axisstate >> 4) & 1) == 1) parts.Add("正向硬限位报警");
+        if (((axisstate >> 5) & 1) == 1) parts.Add("负向硬限位报警");
+        if (((axisstate >> 22) & 1) == 1) parts.Add("伺服报警");
+        // 其余置位的位原样列出，避免漏掉未知报警
+        for (int b = 0; b < 32; b++)
+        {
+            if (b == 4 || b == 5 || b == 22) continue;
+            if (((axisstate >> b) & 1) == 1) parts.Add($"bit{b}");
+        }
+        return parts.Count > 0 ? string.Join(", ", parts) : "正常";
     }
 
     public void Stop()
@@ -372,7 +467,7 @@ public class ZMotionDeviceController : IDeviceController
     /// SDO 读 EtherCAT 从站对象字典（Service Data Object，配置类、单次数据读）。
     /// type: 1=bool 2=int8 3=int16 4=int32 5=uint8 6=uint16 7=uint32
     /// </summary>
-    public (int rc, int value) SDOReadRaw(int node, uint index, uint subindex, uint type = 0x03)
+    public (int rc, int value) SDOReadRaw(int node, uint index, uint subindex, uint type = 0x06)
     {
         EnsureConnected();
         int value = 0;
@@ -385,7 +480,7 @@ public class ZMotionDeviceController : IDeviceController
     /// 参数和 SDORead 一样，但走 PDO 通道，通常支持复合对象内部的 subindex 读。
     /// type: 1=bool 2=int8 3=int16 4=int32 5=uint8 6=uint16 7=uint32
     /// </summary>
-    public (int rc, int value) NodePdoReadRaw(int node, uint index, uint subindex, uint type = 0x03)
+    public (int rc, int value) NodePdoReadRaw(int node, uint index, uint subindex, uint type = 0x06)
     {
         EnsureConnected();
         int value = 0;
@@ -405,24 +500,24 @@ public class ZMotionDeviceController : IDeviceController
 
     /// <summary>
     /// 初始化 EC8124：写量程（0x2000）和使能通道（0x2002）。
-    /// rangeMode: 0=±10V, 1=±5V, 2=0~10V, 3=±20mA, 4=4~20mA（按常见 AD 模块惯例）。
+    /// rangeMode: 0=±10V, 1=±5V。
     /// </summary>
     public (int rc, string log) InitEC8124(int node = 1, int rangeMode = 0)
     {
         var sb = new System.Text.StringBuilder();
 
         // 1. 量程配置 0x2000 (UINT16)
-        int rc = SDOWriteRaw(node, 0x2000, 0, 0x02, rangeMode);
+        int rc = SDOWriteRaw(node, 0x2000, 0, 0x06, rangeMode);
         sb.AppendLine($"  SDOWrite 0x2000(range={rangeMode}): rc={rc}");
         // 读回验证
-        var (rc2, v2) = SDOReadRaw(node, 0x2000, 0, 0x02);
+        var (rc2, v2) = SDOReadRaw(node, 0x2000, 0, 0x06);
         sb.AppendLine($"  SDORead  0x2000: rc={rc2} value={v2}");
 
         // 2. 通道使能 0x2002 (DT2002 复合类型，sub=1~4 分别使能 ch0~ch3)
         sb.AppendLine("  通道使能 0x2002 (DT2002 sub1~4):");
         for (int ch = 1; ch <= 4; ch++)
         {
-            int rc3 = SDOWriteRaw(node, 0x2002, (uint)ch, 0x02, 1);
+            int rc3 = SDOWriteRaw(node, 0x2002, (uint)ch, 0x06, 1);
             sb.AppendLine($"    sub{ch}=1: rc={rc3}");
         }
         // 读回验证
@@ -430,7 +525,7 @@ public class ZMotionDeviceController : IDeviceController
         for (int ch = 1; ch <= 4; ch++)
         {
             var (rc4, v4) = NodePdoReadRaw(node, 0x6401, (uint)ch, 0x06);
-            int signed = (int)(v4 & 0xFFFF) - 32768;
+            int signed = (int)(v4 & 0xFFFF);// - (int)HW_ZERO;
             sb.AppendLine($"    ch{ch - 1}: rc={rc4} raw=0x{v4 & 0xFFFF:X4}=raw{signed}");
         }
 
@@ -445,7 +540,8 @@ public class ZMotionDeviceController : IDeviceController
     /// </summary>
     public (int rc, float voltage)[] ReadEC8124AD(int node = 1)
     {
-        const uint HW_ZERO = 32768u;   // ±5V 量程下 UINT16 零点
+        // EC8124 ±5V 量程：UINT16 0~65535 → 按 INT16 解释减 HW_ZERO(32768) → -32768~+32767
+        const uint HW_ZERO = 32768u;
         var result = new (int rc, float voltage)[4];
         for (int ch = 0; ch < 4; ch++)
         {
@@ -454,11 +550,61 @@ public class ZMotionDeviceController : IDeviceController
             if (rc != 0)
                 (rc, raw) = SDOReadRaw(node, 0x6401, (uint)(ch + 1), 0x06);
 
-            // 硬件零点偏移：UINT 0~65535 → 0V=32768，减到以 0 为中心
+            // UINT16 → INT16：减硬件零点 32768，得到 -32768~+32767 的有符号 ADC 值
             int signed = (int)(raw & 0xFFFF) - (int)HW_ZERO;
             result[ch] = (rc, signed);
         }
         return result;
+    }
+
+    /// <summary>
+    /// 软限位实时监控：周期读 Dpos 与正/负软限位比较。
+    /// 越界且速度仍指向限位方向 → 强制减速停止（Cancel imode=2）；
+    /// 速度离开限位方向（回程退出）不拦，否则停在限位外就再也回不来了。
+    /// 进入越界区时通过 LimitTriggered 提示一次（持续越界不重复提示）。
+    /// 控制器侧 FS_LIMIT/RS_LIMIT 硬级软限位仍然有效，本循环是上位机的第二道防线。
+    /// </summary>
+    private async Task LimitMonitorLoopAsync(CancellationToken ct)
+    {
+        const int checkIntervalMs = 50;   // 检测周期
+        int axis = _cfg.ZMotion.GetAxisNumber();
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                if (_connected && _handle != IntPtr.Zero)
+                {
+                    float dpos = 0, speed = 0;
+                    if (zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref dpos) == 0)
+                    {
+                        zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref speed);
+                        float posLim = _cfg.ZMotion.GetSoftLimitPos();
+                        float negLim = _cfg.ZMotion.GetSoftLimitNeg();
+
+                        bool hitPos = dpos >= posLim;
+                        bool hitNeg = dpos <= negLim;
+                        bool outOfLimit = hitPos || hitNeg;
+
+                        // 只拦"继续冲向限位"的方向
+                        if ((hitPos && speed > 0) || (hitNeg && speed < 0))
+                            zmcaux.ZAux_Direct_Single_Cancel(_handle, axis, 2);
+
+                        if (outOfLimit && !_wasOutOfLimit)
+                        {
+                            float lim = hitPos ? posLim : negLim;
+                            string side = hitPos ? "正向" : "负向";
+                            LimitTriggered?.Invoke(this,
+                                $"已到{side}软限位 {lim:F1}（当前位置 {dpos:F1}），已强制停止");
+                        }
+                        _wasOutOfLimit = outOfLimit;
+                    }
+                }
+            }
+            catch { /* 单次读/停失败不影响监控循环，下一轮重试 */ }
+
+            await Task.Delay(checkIntervalMs, ct).ConfigureAwait(false);
+        }
     }
 
     private async Task SensorLoopAsync(CancellationToken ct)

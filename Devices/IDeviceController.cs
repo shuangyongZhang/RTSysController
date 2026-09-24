@@ -13,6 +13,9 @@ public interface IDeviceController : IDisposable
     /// <summary>4 路传感器数据实时上报（注意：可能在后台线程触发）。</summary>
     event EventHandler<SensorDataEventArgs>? SensorDataReceived;
 
+    /// <summary>实时限位监控触发停止时上报（参数为提示文本，注意：可能在后台线程触发）。</summary>
+    event EventHandler<string>? LimitTriggered;
+
     /// <summary>设备意外断开时触发。</summary>
     event EventHandler? Disconnected;
 

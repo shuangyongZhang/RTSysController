@@ -1,4 +1,4 @@
-using MotorControlApp.Configuration;
+﻿using MotorControlApp.Configuration;
 using MotorControlApp.Devices;
 
 namespace MotorControlApp.Forms;
@@ -31,6 +31,11 @@ public class MainForm : Form
     private TextBox _txtUnits = null!;
     private TextBox _txtSramp = null!;
     private Button _btnUpdate = null!;
+    private TextBox _txtDpos = null!;          // 当前位置（只读）
+    private TextBox _txtSoftPos = null!;        // 正向软限位
+    private TextBox _txtSoftNeg = null!;        // 负向软限位
+    private Button _btnApplyLimits = null!;    // 应用软限位
+    private System.Windows.Forms.Timer? _axisTimer;  // 连接后轮询 Dpos
 
     // 运动控制
     private Button _btnForward = null!;
@@ -38,8 +43,13 @@ public class MainForm : Form
     private Button _btnStop = null!;
 
     // 传感器
-    private readonly TextBox[] _sensorBoxes = new TextBox[4];
+    private readonly TextBox[] _sensorRawBoxes = new TextBox[4];
+    private readonly TextBox[] _sensorKgBoxes = new TextBox[4];
+    private readonly TextBox[] _sensorNBoxes = new TextBox[4];
+    private readonly TextBox[] _sensorKBoxes  = new TextBox[4];
     private readonly int[] _zeroOffsets = new int[4];   // 归零偏移（点击"归零校准"时记录当前 raw，显示时减去）
+    private TextBox _txtGravity = null!;
+    private TextBox _txtWeight = null!;   // 砝码重量 kg（用于算 K 标定系数，不存 config）
 
     private volatile bool _connecting;
     private volatile bool _disconnecting;
@@ -54,7 +64,7 @@ public class MainForm : Form
     private void BuildUi()
     {
         Text = _useSimulator ? "电机控制器（模拟模式）" : "电机控制器（正运动 ZMotion）";
-        ClientSize = new Size(440, 820);
+        ClientSize = new Size(512, 920);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -79,7 +89,7 @@ public class MainForm : Form
         var group = new GroupBox
         {
             Text = "连接",
-            Location = new Point(16, 46),
+            Location = new Point(52, 46),
             Size = new Size(408, 118)
         };
 
@@ -115,49 +125,50 @@ public class MainForm : Form
         var group = new GroupBox
         {
             Text = "轴参数",
-            Location = new Point(16, 172),
-            Size = new Size(408, 264)
+            Location = new Point(52, 172),
+            Size = new Size(408, 270)   // 原 196 + 74（Dpos + 软限位两行）
         };
 
-        // 第一行：轴号 + 脉冲当量
-        group.Controls.Add(new Label { Text = "轴号：", Location = new Point(16, 28), Size = new Size(50, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtAxisNumber = new TextBox { Location = new Point(70, 25), Size = new Size(80, 27), Text = _config.ZMotion.AxisNumber.Value.ToString(), TextAlign = HorizontalAlignment.Right };
-        group.Controls.Add(_txtAxisNumber);
+        const int rowY1 = 26, rowY2 = 54, rowY3 = 82, rowY4 = 110;
+        const int rowDpos = 144;
+        const int rowLimit = 172;
+        const int tbH = 24;
 
-        group.Controls.Add(new Label { Text = "脉冲当量：", Location = new Point(180, 28), Size = new Size(68, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtUnits = new TextBox { Location = new Point(252, 25), Size = new Size(70, 27), Text = _config.ZMotion.Units.Value.ToString("0.###"), TextAlign = HorizontalAlignment.Right };
+        // 第一行：轴号 + 脉冲当量
+        group.Controls.Add(new Label { Text = "轴号：", Location = new Point(16, rowY1), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtAxisNumber = new TextBox { Location = new Point(70, rowY1 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.AxisNumber.Value.ToString(), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(_txtAxisNumber);
+        group.Controls.Add(new Label { Text = "脉冲当量：", Location = new Point(156, rowY1), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtUnits = new TextBox { Location = new Point(228, rowY1 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Units.Value.ToString("0.###"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtUnits);
-        group.Controls.Add(new Label { Text = "mm/pulse", Location = new Point(326, 28), Size = new Size(60, 22), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/pulse", Location = new Point(296, rowY1), Size = new Size(60, 20), ForeColor = Color.DimGray });
 
         // 第二行：运行速度
-        group.Controls.Add(new Label { Text = "速度：", Location = new Point(16, 66), Size = new Size(50, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtSpeed = new TextBox { Location = new Point(70, 63), Size = new Size(80, 27), Text = _config.ZMotion.Speed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(new Label { Text = "速度：", Location = new Point(16, rowY2), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtSpeed = new TextBox { Location = new Point(70, rowY2 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.Speed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSpeed);
-        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(154, 66), Size = new Size(48, 22), ForeColor = Color.DimGray });
-
-        group.Controls.Add(new Label { Text = "最低速度：", Location = new Point(220, 66), Size = new Size(68, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtLspeed = new TextBox { Location = new Point(292, 63), Size = new Size(70, 27), Text = _config.ZMotion.Lspeed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(156, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "最低速度：", Location = new Point(220, rowY2), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtLspeed = new TextBox { Location = new Point(292, rowY2 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Lspeed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtLspeed);
-        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(366, 66), Size = new Size(40, 22), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(360, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第三行：加减速
-        group.Controls.Add(new Label { Text = "加速度：", Location = new Point(16, 104), Size = new Size(50, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtAccel = new TextBox { Location = new Point(70, 101), Size = new Size(80, 27), Text = _config.ZMotion.Accel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(new Label { Text = "加速度：", Location = new Point(16, rowY3), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtAccel = new TextBox { Location = new Point(70, rowY3 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.Accel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtAccel);
-        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(154, 104), Size = new Size(52, 22), ForeColor = Color.DimGray });
-
-        group.Controls.Add(new Label { Text = "减速度：", Location = new Point(220, 104), Size = new Size(68, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtDecel = new TextBox { Location = new Point(292, 101), Size = new Size(70, 27), Text = _config.ZMotion.Decel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(156, rowY3), Size = new Size(52, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "减速度：", Location = new Point(220, rowY3), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtDecel = new TextBox { Location = new Point(292, rowY3 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Decel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtDecel);
-        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(366, 104), Size = new Size(40, 22), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(360, rowY3), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第四行：S 曲线 + 更新按钮
-        group.Controls.Add(new Label { Text = "S曲线：", Location = new Point(16, 142), Size = new Size(50, 22), TextAlign = ContentAlignment.MiddleRight });
-        _txtSramp = new TextBox { Location = new Point(70, 139), Size = new Size(80, 27), Text = _config.ZMotion.Sramp.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(new Label { Text = "S曲线：", Location = new Point(16, rowY4), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtSramp = new TextBox { Location = new Point(70, rowY4 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.Sramp.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSramp);
-        group.Controls.Add(new Label { Text = "ms (0=关闭)", Location = new Point(154, 142), Size = new Size(74, 22), ForeColor = Color.DimGray });
-
-        _btnUpdate = new Button { Text = "应用参数", Location = new Point(292, 138), Size = new Size(92, 30) };
+        group.Controls.Add(new Label { Text = "ms (0=关)", Location = new Point(156, rowY4), Size = new Size(74, 20), ForeColor = Color.DimGray });
+        _btnUpdate = new Button { Text = "应用参数", Location = new Point(292, rowY4 - 3), Size = new Size(92, 28) };
         _btnUpdate.Click += (_, _) =>
         {
             string? err = ReadAndApplyParams();
@@ -166,7 +177,41 @@ public class MainForm : Form
         };
         group.Controls.Add(_btnUpdate);
 
+        // 第五行：当前位置 Dpos（只读，连接后轮询刷新）
+        group.Controls.Add(new Label { Text = "当前位置：", Location = new Point(16, rowDpos), Size = new Size(70, 20), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
+        _txtDpos = new TextBox { Location = new Point(90, rowDpos - 2), Size = new Size(110, tbH), Text = "--", TextAlign = HorizontalAlignment.Right, ReadOnly = true, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
+        group.Controls.Add(_txtDpos);
+        group.Controls.Add(new Label { Text = "mm", Location = new Point(204, rowDpos), Size = new Size(28, 20), ForeColor = Color.DimGray });
+
+        // 第六行：负向软限位 + 正向软限位 + 应用按钮
+        group.Controls.Add(new Label { Text = "负限位：", Location = new Point(16, rowLimit), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtSoftNeg = new TextBox { Location = new Point(70, rowLimit - 2), Size = new Size(80, tbH), Text = _config.ZMotion.SoftLimitNeg.Value.ToString(), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(_txtSoftNeg);
+        group.Controls.Add(new Label { Text = "正限位：", Location = new Point(156, rowLimit), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
+        _txtSoftPos = new TextBox { Location = new Point(210, rowLimit - 2), Size = new Size(80, tbH), Text = _config.ZMotion.SoftLimitPos.Value.ToString(), TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(_txtSoftPos);
+        _btnApplyLimits = new Button { Text = "应用限位", Location = new Point(296, rowLimit - 3), Size = new Size(92, 28), Enabled = false };
+        _btnApplyLimits.Click += BtnApplyLimits_Click;
+        group.Controls.Add(_btnApplyLimits);
+
         Controls.Add(group);
+    }
+
+    private void BtnApplyLimits_Click(object? sender, EventArgs e)
+    {
+        if (_device is not ZMotionDeviceController zmc) return;
+        if (!TryParseFloat(_txtSoftNeg.Text, out float neg)) { TipForm.Show(this, "负限位格式错", false, 2000); return; }
+        if (!TryParseFloat(_txtSoftPos.Text, out float pos)) { TipForm.Show(this, "正限位格式错", false, 2000); return; }
+        if (neg >= pos) { TipForm.Show(this, "负限位必须 < 正限位", false, 2500); return; }
+        try
+        {
+            zmc.ApplySoftLimits(pos, neg);
+            TipForm.Show(this, $"软限位已应用：{neg} ~ {pos} mm", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+        }
+        catch (Exception ex)
+        {
+            TipForm.Show(this, $"应用失败：{ex.Message}", false, 3000);
+        }
     }
 
     // ============================================================ 运动控制
@@ -176,7 +221,7 @@ public class MainForm : Form
         var group = new GroupBox
         {
             Text = "运动控制",
-            Location = new Point(16, 450),
+            Location = new Point(52, 450),
             Size = new Size(408, 86)
         };
 
@@ -203,65 +248,87 @@ public class MainForm : Form
         var group = new GroupBox
         {
             Text = "传感器实时数据",
-            Location = new Point(16, 550),
-            Size = new Size(408, 248)  // 底部加扫描按钮行
+            Location = new Point(16, 544),
+            Size = new Size(480, 376)
         };
 
-        // 4 个通道显示
+        // 5 列布局：# | raw | kg | N | K   面板宽 480
+        const int colCh = 16;
+        const int colRaw = 62;     // 16 + 40 + 6
+        const int colKg  = 164;    // 62 + 96 + 6
+        const int colN   = 266;    // 164 + 96 + 6
+        const int colK   = 368;    // 266 + 96 + 6
+        const int wBox = 96;
+        const int wChLabel = 40;
+        const int rowH = 34;
+        const int headerH = 22;
+        const int startY = 40;
+
+        // 列标题（显示单位）——从 startY 起，占 headerH 高度
+        int hdrY = startY;
+        group.Controls.Add(new Label { Text = "#",  Location = new Point(colCh + 12,  hdrY), Size = new Size(wChLabel, headerH), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "raw", Location = new Point(colRaw + 2,  hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "kg",  Location = new Point(colKg + 2,   hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "N",   Location = new Point(colN + 2,    hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "K",   Location = new Point(colK + 2,    hdrY), Size = new Size(wBox, headerH), TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.DimGray });
+
+        // 数据行——紧接在列标题下方，不重叠
         for (int i = 0; i < 4; i++)
         {
-            int rowY = 26 + i * 40;
+            int rowY = startY + headerH + 2 + i * rowH;   // headerH(22) + gap(2)
             group.Controls.Add(new Label
             {
                 Text = $"CH{i}",
-                Location = new Point(16, rowY + 4),
-                Size = new Size(40, 22),
+                Location = new Point(colCh, rowY + 2),
+                Size = new Size(wChLabel, 22),
                 TextAlign = ContentAlignment.MiddleCenter,
                 ForeColor = Color.DimGray
             });
-            _sensorBoxes[i] = new TextBox
-            {
-                Location = new Point(62, rowY),
-                Size = new Size(160, 27),
-                ReadOnly = true,
-                TextAlign = HorizontalAlignment.Right,
-                Font = new Font("Consolas", 12)
-            };
-            group.Controls.Add(_sensorBoxes[i]);
-            group.Controls.Add(new Label
-            {
-                Text = "raw",
-                Location = new Point(228, rowY + 4),
-                Size = new Size(40, 22),
-                ForeColor = Color.DimGray
-            });
+            _sensorRawBoxes[i] = new TextBox { Location = new Point(colRaw, rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
+            _sensorKgBoxes[i]  = new TextBox { Location = new Point(colKg,  rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
+            _sensorNBoxes[i]   = new TextBox { Location = new Point(colN,   rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10) };
+            _sensorKBoxes[i]   = new TextBox { Location = new Point(colK,   rowY), Size = new Size(wBox, 26), ReadOnly = true, TextAlign = HorizontalAlignment.Right, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
+            group.Controls.Add(_sensorRawBoxes[i]);
+            group.Controls.Add(_sensorKgBoxes[i]);
+            group.Controls.Add(_sensorNBoxes[i]);
+            group.Controls.Add(_sensorKBoxes[i]);
         }
 
-        // 扫描按钮 + 归零校准 + 清除
-        var btnScan = new Button
+        // 砝码输入行
+        int weightY = startY + headerH + 2 + 4 * rowH + 6;
+        group.Controls.Add(new Label { Text = "砝码 =", Location = new Point(colCh, weightY + 4), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
+        _txtWeight = new TextBox { Location = new Point(colCh + 58, weightY + 2), Size = new Size(64, 26), Text = "50", TextAlign = HorizontalAlignment.Right };
+        group.Controls.Add(_txtWeight);
+        group.Controls.Add(new Label { Text = "kg  (K = 砝码×g / N)", Location = new Point(colCh + 126, weightY + 4), Size = new Size(240, 22), ForeColor = Color.DimGray });
+
+        // 重力输入行
+        int gravityY = weightY + 32;
+        group.Controls.Add(new Label { Text = "1kg =", Location = new Point(colCh, gravityY + 4), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
+        _txtGravity = new TextBox
         {
-            Text = "总线诊断",
-            Location = new Point(16, 190),
-            Size = new Size(100, 32)
+            Location = new Point(colCh + 58, gravityY + 2),
+            Size = new Size(64, 26),
+            Text = _config.Sensor.Gravity.Value.ToString("0.##"),
+            TextAlign = HorizontalAlignment.Right
         };
+        _txtGravity.TextChanged += (_, _) =>
+        {
+            if (double.TryParse(_txtGravity.Text, out double g)) _config.Sensor.Gravity.Value = g;
+        };
+        group.Controls.Add(_txtGravity);
+        group.Controls.Add(new Label { Text = "N (g)", Location = new Point(colCh + 126, gravityY + 4), Size = new Size(70, 22), ForeColor = Color.DimGray });
+
+        // 按钮行
+        int btnY = gravityY + 34;
+        var btnScan = new Button { Text = "总线诊断", Location = new Point(colCh, btnY), Size = new Size(100, 30) };
         btnScan.Click += (_, _) => SafeRun(ScanAINAndShow, ShowErr);
         group.Controls.Add(btnScan);
 
-        var btnZero = new Button
-        {
-            Text = "归零校准",
-            Location = new Point(124, 190),
-            Size = new Size(100, 32)
-        };
+        var btnZero = new Button { Text = "归零校准", Location = new Point(colCh + 108, btnY), Size = new Size(100, 30) };
         btnZero.Click += BtnZeroCal_Click;
         group.Controls.Add(btnZero);
 
-        var btnClearZero = new Button
-        {
-            Text = "清除零点",
-            Location = new Point(232, 190),
-            Size = new Size(100, 32)
-        };
+        var btnClearZero = new Button { Text = "清除零点", Location = new Point(colCh + 216, btnY), Size = new Size(100, 30) };
         btnClearZero.Click += (_, _) =>
         {
             Array.Clear(_zeroOffsets, 0, _zeroOffsets.Length);
@@ -303,6 +370,7 @@ public class MainForm : Form
             _device = DeviceFactory.Create(_config);
             _device.SensorDataReceived += Device_SensorDataReceived;
             _device.Disconnected += Device_Disconnected;
+            _device.LimitTriggered += Device_LimitTriggered;
 
             await _device.ConnectAsync();
 
@@ -337,8 +405,13 @@ public class MainForm : Form
             _lblStatus.Text = "未连接";
             _lblStatus.ForeColor = Color.DimGray;
             _btnConnect.Text = "连接";
-            for (int i = 0; i < _sensorBoxes.Length; i++)
-                _sensorBoxes[i].Text = "";
+            for (int i = 0; i < _sensorRawBoxes.Length; i++)
+            {
+                _sensorRawBoxes[i].Text = "";
+                _sensorKgBoxes[i].Text = "";
+                _sensorNBoxes[i].Text = "";
+                _sensorKBoxes[i].Text = "";
+            }
         }
         finally { _disconnecting = false; }
     }
@@ -349,16 +422,45 @@ public class MainForm : Form
         BeginInvoke(DisconnectDevice);
     }
 
+    private void Device_LimitTriggered(object? sender, string msg)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(() => TipForm.Show(this, msg, false, 5000));
+    }
+
     private void Device_SensorDataReceived(object? sender, SensorDataEventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
         BeginInvoke(() =>
         {
-            for (int i = 0; i < _sensorBoxes.Length && i < e.Values.Count; i++)
+            double adcPerGram = _config.Sensor.AdcPerGram.Value;
+            double gravity = _config.Sensor.Gravity.Value;
+            double wgtKg = 0;
+            bool wgtOk = _txtWeight != null && double.TryParse(_txtWeight.Text, out wgtKg);
+            for (int i = 0; i < _sensorRawBoxes.Length && i < e.Values.Count; i++)
             {
                 int raw = (int)Math.Round(e.Values[i]);
                 int calibrated = raw - _zeroOffsets[i];
-                _sensorBoxes[i].Text = calibrated.ToString();
+                _sensorRawBoxes[i].Text = calibrated.ToString();
+
+                // 1 ADC ≈ 15.26 g → kg = raw * 15.26 / 1000
+                double kg = calibrated * adcPerGram / 1000.0;
+                _sensorKgBoxes[i].Text = kg.ToString("F3");
+
+                // N = kg * g
+                double n = kg * gravity;
+                _sensorNBoxes[i].Text = n.ToString("F3");
+
+                // K = 砝码kg × g / N   （砝码不填或 N≈0 时跳过）
+                if (wgtOk && wgtKg > 0 && Math.Abs(n) > 0.001)
+                {
+                    double k = wgtKg * gravity / n;
+                    _sensorKBoxes[i].Text = k.ToString("F4");
+                }
+                else
+                {
+                    _sensorKBoxes[i].Text = "-";
+                }
             }
         });
     }
@@ -394,9 +496,33 @@ public class MainForm : Form
         _btnForward.Enabled = connected;
         _btnBackward.Enabled = connected;
         _btnStop.Enabled = connected;
+        _btnApplyLimits.Enabled = connected;
         _txtTarget.Enabled = !connected;
         _txtTimeout.Enabled = !connected;
         _btnSearch.Enabled = !connected;  // 只有 Ethernet 模式，未连接时始终可搜索
+
+        if (connected) StartAxisTimer(); else StopAxisTimer();
+    }
+
+    private void StartAxisTimer()
+    {
+        _axisTimer?.Stop();
+        _axisTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        _axisTimer.Tick += (_, _) =>
+        {
+            if (_device is not ZMotionDeviceController zmc) return;
+            try { _txtDpos.Text = zmc.GetCurrentDpos().ToString("F2"); }
+            catch { _txtDpos.Text = "--"; }
+        };
+        _axisTimer.Start();
+    }
+
+    private void StopAxisTimer()
+    {
+        _axisTimer?.Stop();
+        _axisTimer?.Dispose();
+        _axisTimer = null;
+        if (_txtDpos != null && !IsDisposed) _txtDpos.Text = "--";
     }
 
     // ============================================================ 参数读写
@@ -404,8 +530,14 @@ public class MainForm : Form
     /// <summary>总线 + AIN + 轴诊断（精简版）。</summary>
     private void ScanAINAndShow()
     {
-        if (_device is not Devices.ZMotionDeviceController zmc)
-            throw new InvalidOperationException("未连接到正运动控制器");
+        if (_device == null)
+            throw new InvalidOperationException("_device 为 null，未连接");
+
+        if (!_device.IsConnected)
+            throw new InvalidOperationException($"设备类型 {_device.GetType().Name}，但 IsConnected=false");
+
+        if (_device is not ZMotionDeviceController zmc)
+            throw new InvalidOperationException($"当前设备类型是 {_device.GetType().Name}（模拟器），总线诊断需要 ZMotionDeviceController（正运动控制器）");
 
         var sb = new System.Text.StringBuilder();
 
@@ -453,10 +585,10 @@ public class MainForm : Form
             try { sb.AppendLine($"    BASIC SDO_READ → {zmc.BasicCmd("SDO_READ(0,1,&H6401,1,2,_v) : ?\"rc=\"; _v")}"); }
             catch { sb.AppendLine("    BASIC SDO_READ → ERR"); }
             sb.AppendLine("  -- C# SDK SDOReadRaw Node1 idx=0x6401 sub=1 --");
-            try { var (rc, val) = zmc.SDOReadRaw(1, 0x6401, 1, 0x02); sb.AppendLine($"    rc={rc} value={val}"); }
+            try { var (rc, val) = zmc.SDOReadRaw(1, 0x6401, 1, 0x06); sb.AppendLine($"    rc={rc} value={val}"); }
             catch (Exception ex) { sb.AppendLine($"    ERR: {ex.Message}"); }
             sb.AppendLine("  -- C# SDK NodePdoReadRaw Node1 idx=0x6401 sub=1 --");
-            try { var (rc, val) = zmc.NodePdoReadRaw(1, 0x6401, 1, 0x02); sb.AppendLine($"    rc={rc} value={val}"); }
+            try { var (rc, val) = zmc.NodePdoReadRaw(1, 0x6401, 1, 0x06); sb.AppendLine($"    rc={rc} value={val}"); }
             catch (Exception ex) { sb.AppendLine($"    ERR: {ex.Message}"); }
         }
         catch (Exception ex) { sb.AppendLine($"  BASIC 层测试整体失败: {ex.Message}"); }
@@ -480,10 +612,10 @@ public class MainForm : Form
         sb.AppendLine();
 
         // (5) ★ 配置 + 读回 EC8124
-        sb.AppendLine("=== 初始化 EC8124 (量程=±10V + 通道使能) ===");
+        sb.AppendLine("=== 初始化 EC8124 (量程=±5V + 通道使能) ===");
         try
         {
-            var (rc, log) = zmc.InitEC8124(1, 0);
+            var (rc, log) = zmc.InitEC8124(1, 1);
             sb.Append(log);
             sb.AppendLine($"  初始化整体 rc={rc}");
         }
@@ -570,6 +702,9 @@ public class MainForm : Form
         ConfigService.TrySave(_config);
     }
 }
+
+
+
 
 
 
