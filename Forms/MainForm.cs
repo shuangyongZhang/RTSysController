@@ -176,9 +176,10 @@ public class MainForm : Form
         _btnUpdate.Click += (_, _) =>
         {
             float rate = 0;
-            float newUnits = float.Parse(_txtUnits.Text);
-            if (_oldUnits != newUnits)
+            float newUnits;
+            if (TryParseFloat(_txtUnits.Text, out newUnits))
             {
+                if (_oldUnits == newUnits) return;
                 rate = _oldUnits / newUnits;
                 _oldUnits = newUnits;
                 _config.ZMotion.SoftLimitNeg.Value *= rate;
@@ -711,8 +712,8 @@ public class MainForm : Form
         if (!TryParseInt(_txtTimeout.Text, out int timeout) || timeout <= 0) return "超时必须 > 0";
         if (!TryParseFloat(_txtWeight.Text, out float weight) && !string.IsNullOrEmpty(_txtWeight.Text)) return "砝码输入错误";
         if (!TryParseFloat(_txtGravity.Text, out float gravity) || gravity <= 0) return "重力加速度必须 > 0";
-        if (!TryParseInt(_txtSoftPos.Text, out int softPos) || softPos <= 0) return "软正位置必须 > 0";
-        if (!TryParseInt(_txtSoftNeg.Text, out int softNeg) || softNeg >= 0) return "软负位置必须 < 0";
+        if (!TryParseFloat(_txtSoftPos.Text, out float softPos) || softPos <= 0) return "软正位置必须 > 0";
+        if (!TryParseFloat(_txtSoftNeg.Text, out float softNeg) || softNeg >= 0) return "软负位置必须 < 0";
 
         _config.Connection.Type.Value = "Ethernet";  // 固定网口连接
         _config.Connection.Target.Value = _txtTarget.Text.Trim();
@@ -753,9 +754,3 @@ public class MainForm : Form
         ConfigService.TrySave(_config);
     }
 }
-
-
-
-
-
-
