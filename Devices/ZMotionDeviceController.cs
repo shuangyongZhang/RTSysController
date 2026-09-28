@@ -20,6 +20,7 @@ public class ZMotionDeviceController : IDeviceController
     private bool _disposed;
     private CancellationTokenSource? _cts;
     private bool _wasOutOfLimit;      // 限位监控：上一轮是否越界（用于只提示一次）
+    private volatile int _lastMoveDir;  // 最后一次用户指令方向：0=停止/未知，+1=前进，-1=后退（替代 speed 正负判断）
     private int _connectedAxis = -1;     // 本次连接配置的轴号（防止在线改轴号后把参数下发到其他轴）
 
     public ZMotionDeviceController(AppConfig config)
@@ -229,6 +230,7 @@ public class ZMotionDeviceController : IDeviceController
     {
         EnsureConnected();
         int axis = _cfg.ZMotion.GetAxisNumber();
+        _lastMoveDir = dir;   // 记录用户指令方向，供 LimitMonitorLoopAsync 判断是否继续冲向限位
 
         // (0) 防爆冲：运动前 Dpos 越界拦截（软限位之外再套一层，双保险）
         float dpos = GetCurrentDpos();
@@ -292,6 +294,7 @@ public class ZMotionDeviceController : IDeviceController
     public void Stop()
     {
         EnsureConnected();
+        _lastMoveDir = 0;   // 用户主动停，清除方向标记
         ThrowRc(zmcaux.ZAux_Direct_Single_Cancel(_handle, _cfg.ZMotion.GetAxisNumber(), 2), "Cancel(2)");
     }
 
@@ -602,10 +605,11 @@ public class ZMotionDeviceController : IDeviceController
 
     /// <summary>
     /// 软限位实时监控：周期读 Dpos 与正/负软限位比较。
-    /// 越界且速度仍指向限位方向 → 强制减速停止（Cancel imode=2）；
-    /// 速度离开限位方向（回程退出）不拦，否则停在限位外就再也回不来了。
+    /// 越界且用户指令仍指向限位方向 → 强制减速停止（Cancel imode=2）；
+    /// 用户指令指向限位外（反向）不拦，否则停在限位外就再也回不来了。
+    /// 方向不再用 speed 正负判断（CSP 模式下 VpSpeed 符号可能不可靠），
+    /// 改用 RunMove 设置的 _lastMoveDir 记录用户意图。
     /// 进入越界区时通过 LimitTriggered 提示一次（持续越界不重复提示）。
-    /// 控制器侧 FS_LIMIT/RS_LIMIT 硬级软限位仍然有效，本循环是上位机的第二道防线。
     /// </summary>
     private async Task LimitMonitorLoopAsync(CancellationToken ct)
     {
@@ -618,10 +622,9 @@ public class ZMotionDeviceController : IDeviceController
             {
                 if (_connected && _handle != IntPtr.Zero)
                 {
-                    float dpos = 0, speed = 0;
+                    float dpos = 0;
                     if (zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref dpos) == 0)
                     {
-                        zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref speed);
                         float posLim = _cfg.ZMotion.GetSoftLimitPos();
                         float negLim = _cfg.ZMotion.GetSoftLimitNeg();
 
@@ -629,8 +632,11 @@ public class ZMotionDeviceController : IDeviceController
                         bool hitNeg = dpos <= negLim;
                         bool outOfLimit = hitPos || hitNeg;
 
-                        // 只拦"继续冲向限位"的方向
-                        if ((hitPos && speed > 0) || (hitNeg && speed < 0))
+                        // 只拦"用户仍在冲向限位"的方向（用按钮指令方向，不用 speed 符号）
+                        // 正向限位 + 前进指令(_lastMoveDir>0) → 拦
+                        // 负向限位 + 后退指令(_lastMoveDir<0) → 拦
+                        // 其他情况（反向指令、停止、未知）不拦
+                        if ((hitPos && _lastMoveDir > 0) || (hitNeg && _lastMoveDir < 0))
                             zmcaux.ZAux_Direct_Single_Cancel(_handle, axis, 2);
 
                         if (outOfLimit && !_wasOutOfLimit)
