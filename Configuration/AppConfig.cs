@@ -1,4 +1,4 @@
-namespace MotorControlApp.Configuration;
+﻿namespace MotorControlApp.Configuration;
 
 /// <summary>
 /// 对应外部 config.json 的根对象，新增可调参数时在此扩展即可。
@@ -36,8 +36,14 @@ public sealed class ZMotionConfig
     /// <summary>轴号。</summary>
     public CfgValue<int> AxisNumber { get; set; } = new() { Value = 0 };
 
-    /// <summary>脉冲当量：1 脉冲 = 多少物理单位（mm/脉冲），SetUnits 参数。</summary>
+    /// <summary>脉冲当量：每 1 用户单位 = 多少脉冲（SetUnits 参数），=1 即 1 units = 1 pulse。</summary>
     public CfgValue<float> Units { get; set; } = new() { Value = 1.0f };
+
+    /// <summary>丝杆导程（mm）：电机转一圈，平台走多少 mm。</summary>
+    public CfgValue<float> Lead { get; set; } = new() { Value = 28.2857f };
+
+    /// <summary>齿轮比分母：电机转一圈 = 多少脉冲。</summary>
+    public CfgValue<int> GearDenominator { get; set; } = new() { Value = 100000 };
 
     /// <summary>最低速度（mm/s），SetLspeed 参数。</summary>
     public CfgValue<float> Lspeed { get; set; } = new() { Value = 10.0f };

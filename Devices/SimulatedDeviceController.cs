@@ -17,7 +17,7 @@ public sealed class SimulatedDeviceController : IDeviceController
 
     public SimulatedDeviceController(int updateIntervalMs)
     {
-        _updateIntervalMs = Math.Max(50, updateIntervalMs);
+        _updateIntervalMs = Math.Max(5, updateIntervalMs);
         for (int i = 0; i < _values.Length; i++)
         {
             _values[i] = 50.0;

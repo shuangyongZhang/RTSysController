@@ -159,6 +159,14 @@ public class ZMotionDeviceController : IDeviceController
         }, cancellationToken);
     }
 
+    /// <summary>把指令位置（Mpos）和反馈位置（Dpos）同时清零，设为新的机械原点。</summary>
+    public void ZeroPosition()
+    {
+        EnsureConnected();
+        int axis = _cfg.ZMotion.GetAxisNumber();
+        ThrowRc(zmcaux.ZAux_Direct_SetMpos(_handle, axis, 0f), $"SetMpos({axis})");
+        ThrowRc(zmcaux.ZAux_Direct_SetDpos(_handle, axis, 0f), $"SetDpos({axis})");
+    }
     public void Disconnect()
     {
         lock (_lock)

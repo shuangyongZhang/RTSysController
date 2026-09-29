@@ -35,6 +35,7 @@ public class MainForm : Form
     private TextBox _txtSoftPos = null!;        // 正向软限位
     private TextBox _txtSoftNeg = null!;        // 负向软限位
     private Button _btnApplyLimits = null!;    // 应用软限位
+    private Button _btnZeroPosition = null!;   // 归零
     private System.Windows.Forms.Timer? _axisTimer;  // 连接后轮询 Dpos
 
     // 运动控制
@@ -145,27 +146,27 @@ public class MainForm : Form
         group.Controls.Add(new Label { Text = "脉冲当量：", Location = new Point(156, rowY1), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
         _txtUnits = new TextBox { Location = new Point(228, rowY1 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Units.Value.ToString("0.###"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtUnits);
-        group.Controls.Add(new Label { Text = "mm/pulse", Location = new Point(296, rowY1), Size = new Size(60, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "units", Location = new Point(296, rowY1), Size = new Size(60, 20), ForeColor = Color.DimGray });
 
         // 第二行：运行速度
         group.Controls.Add(new Label { Text = "速度：", Location = new Point(16, rowY2), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtSpeed = new TextBox { Location = new Point(70, rowY2 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.Speed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
+        _txtSpeed = new TextBox { Location = new Point(70, rowY2 - 2), Size = new Size(72, tbH), Text = FromUnits(_config.ZMotion.Speed.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSpeed);
-        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(156, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "cm/s", Location = new Point(156, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
         group.Controls.Add(new Label { Text = "最低速度：", Location = new Point(220, rowY2), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtLspeed = new TextBox { Location = new Point(292, rowY2 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Lspeed.Value.ToString("0.#"), TextAlign = HorizontalAlignment.Right };
+        _txtLspeed = new TextBox { Location = new Point(292, rowY2 - 2), Size = new Size(64, tbH), Text = FromUnits(_config.ZMotion.Lspeed.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtLspeed);
-        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(360, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "cm/s", Location = new Point(360, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第三行：加减速
         group.Controls.Add(new Label { Text = "加速度：", Location = new Point(16, rowY3), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtAccel = new TextBox { Location = new Point(70, rowY3 - 2), Size = new Size(72, tbH), Text = _config.ZMotion.Accel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
+        _txtAccel = new TextBox { Location = new Point(70, rowY3 - 2), Size = new Size(72, tbH), Text = FromUnits(_config.ZMotion.Accel.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtAccel);
-        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(156, rowY3), Size = new Size(52, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "cm/s²", Location = new Point(156, rowY3), Size = new Size(52, 20), ForeColor = Color.DimGray });
         group.Controls.Add(new Label { Text = "减速度：", Location = new Point(220, rowY3), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtDecel = new TextBox { Location = new Point(292, rowY3 - 2), Size = new Size(64, tbH), Text = _config.ZMotion.Decel.Value.ToString("0"), TextAlign = HorizontalAlignment.Right };
+        _txtDecel = new TextBox { Location = new Point(292, rowY3 - 2), Size = new Size(64, tbH), Text = FromUnits(_config.ZMotion.Decel.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtDecel);
-        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(360, rowY3), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "cm/s²", Location = new Point(360, rowY3), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第四行：S 曲线 + 更新按钮
         group.Controls.Add(new Label { Text = "S曲线：", Location = new Point(16, rowY4), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
@@ -184,8 +185,8 @@ public class MainForm : Form
                 _oldUnits = newUnits;
                 _config.ZMotion.SoftLimitNeg.Value *= rate;
                 _config.ZMotion.SoftLimitPos.Value *= rate;
-                _txtSoftPos.Text = _config.ZMotion.SoftLimitPos.Value.ToString("0.#");
-                _txtSoftNeg.Text = _config.ZMotion.SoftLimitNeg.Value.ToString("0.#");
+                _txtSoftPos.Text = FromUnits(_config.ZMotion.SoftLimitPos.Value).ToString("0.####");
+                _txtSoftNeg.Text = FromUnits(_config.ZMotion.SoftLimitNeg.Value).ToString("0.####");
             }
             string? err = ReadAndApplyParams();
             if (err != null) { TipForm.Show(this, err, false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000)); return; }
@@ -215,18 +216,28 @@ public class MainForm : Form
         group.Controls.Add(new Label { Text = "当前位置：", Location = new Point(16, rowDpos), Size = new Size(70, 20), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
         _txtDpos = new TextBox { Location = new Point(90, rowDpos - 2), Size = new Size(110, tbH), Text = "--", TextAlign = HorizontalAlignment.Right, ReadOnly = true, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
         group.Controls.Add(_txtDpos);
-        group.Controls.Add(new Label { Text = "mm", Location = new Point(204, rowDpos), Size = new Size(28, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "cm", Location = new Point(204, rowDpos), Size = new Size(28, 20), ForeColor = Color.DimGray });
 
         // 第六行：负向软限位 + 正向软限位 + 应用按钮
         group.Controls.Add(new Label { Text = "负限位：", Location = new Point(16, rowLimit), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtSoftNeg = new TextBox { Location = new Point(70, rowLimit - 2), Size = new Size(80, tbH), Text = _config.ZMotion.SoftLimitNeg.Value.ToString(), TextAlign = HorizontalAlignment.Right };
+        _txtSoftNeg = new TextBox { Location = new Point(70, rowLimit - 2), Size = new Size(80, tbH), Text = FromUnits(_config.ZMotion.SoftLimitNeg.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSoftNeg);
         group.Controls.Add(new Label { Text = "正限位：", Location = new Point(156, rowLimit), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
-        _txtSoftPos = new TextBox { Location = new Point(210, rowLimit - 2), Size = new Size(80, tbH), Text = _config.ZMotion.SoftLimitPos.Value.ToString(), TextAlign = HorizontalAlignment.Right };
+        _txtSoftPos = new TextBox { Location = new Point(210, rowLimit - 2), Size = new Size(80, tbH), Text = FromUnits(_config.ZMotion.SoftLimitPos.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSoftPos);
         _btnApplyLimits = new Button { Text = "应用限位", Location = new Point(296, rowLimit - 3), Size = new Size(92, 28), Enabled = false };
         _btnApplyLimits.Click += BtnApplyLimits_Click;
         group.Controls.Add(_btnApplyLimits);
+        // 第七行：归零校准按钮
+        _btnZeroPosition = new Button
+        {
+            Text = "归零",
+            Location = new Point(156, rowLimit + 33),
+            Size = new Size(92, 28),
+            Enabled = true
+        };
+        _btnZeroPosition.Click += BtnZeroPosition_Click;
+        group.Controls.Add(_btnZeroPosition);
 
         Controls.Add(group);
     }
@@ -234,17 +245,30 @@ public class MainForm : Form
     private void BtnApplyLimits_Click(object? sender, EventArgs e)
     {
         if (_device is not ZMotionDeviceController zmc) return;
-        if (!TryParseFloat(_txtSoftNeg.Text, out float neg)) { TipForm.Show(this, "负限位格式错", false, 2000); return; }
-        if (!TryParseFloat(_txtSoftPos.Text, out float pos)) { TipForm.Show(this, "正限位格式错", false, 2000); return; }
-        if (neg >= pos) { TipForm.Show(this, "负限位必须 < 正限位", false, 2500); return; }
+        if (!TryParseFloat(_txtSoftNeg.Text, out float negMm)) { TipForm.Show(this, "负限位格式错", false, 2000); return; }
+        if (!TryParseFloat(_txtSoftPos.Text, out float posMm)) { TipForm.Show(this, "正限位格式错", false, 2000); return; }
+        if (negMm >= posMm) { TipForm.Show(this, "负限位必须 < 正限位", false, 2500); return; }
         try
         {
-            zmc.ApplySoftLimits(pos, neg);
-            TipForm.Show(this, $"软限位已应用：{neg} ~ {pos} mm", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            zmc.ApplySoftLimits(ToUnits(posMm), ToUnits(negMm));
+            TipForm.Show(this, $"软限位已应用：{negMm} ~ {posMm} cm", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
         }
         catch (Exception ex)
         {
             TipForm.Show(this, $"应用失败：{ex.Message}", false, 3000);
+        }
+    }
+    private void BtnZeroPosition_Click(object? sender, EventArgs e)
+    {
+        if (_device is not ZMotionDeviceController zmc) return;
+        try
+        {
+            zmc.ZeroPosition();
+            TipForm.Show(this, "归零校准完成", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+        }
+        catch (Exception ex)
+        {
+            TipForm.Show(this, $"归零校准失败：{ex.Message}", false, 3000);
         }
     }
 
@@ -538,6 +562,7 @@ public class MainForm : Form
         _btnBackward.Enabled = connected;
         _btnStop.Enabled = connected;
         _btnApplyLimits.Enabled = connected;
+        _btnZeroPosition.Enabled = connected;
         _txtTarget.Enabled = !connected;
         _txtTimeout.Enabled = !connected;
         _btnSearch.Enabled = !connected;  // 只有 Ethernet 模式，未连接时始终可搜索
@@ -552,7 +577,7 @@ public class MainForm : Form
         _axisTimer.Tick += (_, _) =>
         {
             if (_device is not ZMotionDeviceController zmc) return;
-            try { _txtDpos.Text = zmc.GetCurrentDpos().ToString("F2"); }
+            try { _txtDpos.Text = FromUnits(zmc.GetCurrentDpos()).ToString("F4"); }
             catch { _txtDpos.Text = "--"; }
         };
         _axisTimer.Start();
@@ -704,36 +729,41 @@ public class MainForm : Form
     {
         if (!TryParseInt(_txtAxisNumber.Text, out int axis)) return "轴号必须是整数";
         if (!TryParseFloat(_txtUnits.Text, out float units) || units <= 0) return "脉冲当量必须 > 0";
-        if (!TryParseFloat(_txtSpeed.Text, out float speed) || speed <= 0) return "速度必须 > 0";
-        if (!TryParseFloat(_txtAccel.Text, out float accel) || accel <= 0) return "加速度必须 > 0";
-        if (!TryParseFloat(_txtDecel.Text, out float decel) || decel <= 0) return "减速度必须 > 0";
-        if (!TryParseFloat(_txtLspeed.Text, out float lspeed) || lspeed <= 0) return "最低速度必须 > 0";
+        if (!TryParseFloat(_txtSpeed.Text, out float speedMm) || speedMm <= 0) return "速度必须 > 0";
+        if (!TryParseFloat(_txtAccel.Text, out float accelMm) || accelMm <= 0) return "加速度必须 > 0";
+        if (!TryParseFloat(_txtDecel.Text, out float decelMm) || decelMm <= 0) return "减速度必须 > 0";
+        if (!TryParseFloat(_txtLspeed.Text, out float lspeedMm) || lspeedMm <= 0) return "最低速度必须 > 0";
         if (!TryParseFloat(_txtSramp.Text, out float sramp) || sramp < 0) return "S 曲线必须 >= 0";
         if (!TryParseInt(_txtTimeout.Text, out int timeout) || timeout <= 0) return "超时必须 > 0";
         if (!TryParseFloat(_txtWeight.Text, out float weight) && !string.IsNullOrEmpty(_txtWeight.Text)) return "砝码输入错误";
         if (!TryParseFloat(_txtGravity.Text, out float gravity) || gravity <= 0) return "重力加速度必须 > 0";
-        if (!TryParseFloat(_txtSoftPos.Text, out float softPos) || softPos <= 0) return "软正位置必须 > 0";
-        if (!TryParseFloat(_txtSoftNeg.Text, out float softNeg) || softNeg >= 0) return "软负位置必须 < 0";
+        if (!TryParseFloat(_txtSoftPos.Text, out float softPosMm) || softPosMm <= 0) return "软正位置必须 > 0";
+        if (!TryParseFloat(_txtSoftNeg.Text, out float softNegMm) || softNegMm >= 0) return "软负位置必须 < 0";
 
         _config.Connection.Type.Value = "Ethernet";  // 固定网口连接
         _config.Connection.Target.Value = _txtTarget.Text.Trim();
         _config.Connection.TimeoutMs.Value = timeout;
         _config.ZMotion.AxisNumber.Value = axis;
         _config.ZMotion.Units.Value = units;
-        _config.ZMotion.Speed.Value = speed;
-        _config.ZMotion.Accel.Value = accel;
-        _config.ZMotion.Decel.Value = decel;
-        _config.ZMotion.Lspeed.Value = lspeed;
+        _config.ZMotion.Speed.Value = ToUnits(speedMm);
+        _config.ZMotion.Accel.Value = ToUnits(accelMm);
+        _config.ZMotion.Decel.Value = ToUnits(decelMm);
+        _config.ZMotion.Lspeed.Value = ToUnits(lspeedMm);
         _config.ZMotion.Sramp.Value = sramp;
         _config.Sensor.K.Value = string.IsNullOrEmpty(_txtWeight.Text) ? 0 : weight;
         _config.Sensor.Gravity.Value = gravity;
-        _config.ZMotion.SoftLimitPos.Value = softPos;
-        _config.ZMotion.SoftLimitNeg.Value = softNeg;
+        _config.ZMotion.SoftLimitPos.Value = ToUnits(softPosMm);
+        _config.ZMotion.SoftLimitNeg.Value = ToUnits(softNegMm);
         return null;
     }
 
     private static bool TryParseInt(string? t, out int v) => int.TryParse(t, out v);
     private static bool TryParseFloat(string? t, out float v) => float.TryParse(t, out v);
+
+    /// <summary>UI 输入 (cm, cm/s, cm/s²) → config/PAC 内部 (units, units/s)：× GearDenominator / Lead</summary>
+    private float ToUnits(float cmValue) => cmValue * _config.ZMotion.GearDenominator.Value / _config.ZMotion.Lead.Value;
+    /// <summary>config/PAC 内部 (units, units/s) → UI 显示 (cm, cm/s, cm/s²)：× Lead / GearDenominator</summary>
+    private float FromUnits(float units) => units * _config.ZMotion.Lead.Value / _config.ZMotion.GearDenominator.Value;
 
     private static void SafeRun(Action action, Action<string> onError)
     {
@@ -754,3 +784,8 @@ public class MainForm : Form
         ConfigService.TrySave(_config);
     }
 }
+
+
+
+
+
