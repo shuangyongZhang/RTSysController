@@ -1,5 +1,6 @@
 ﻿using MotorControlApp.Configuration;
 using MotorControlApp.Devices;
+using MotorControlApp.Waveforms;
 
 namespace MotorControlApp.Forms;
 
@@ -7,7 +8,7 @@ namespace MotorControlApp.Forms;
 /// 主界面：连接正运动控制卡 → 配置轴参数 → 前进/后退/停止 → 显示 4 路传感器。
 /// 所有可编辑参数来自 ZMotion SDK（zauxdll.dll），参考例程 Form1。
 /// </summary>
-public class MainForm : Form
+public partial class MainForm : Form
 {
     private readonly AppConfig _config;
     private IDeviceController? _device;
@@ -36,12 +37,21 @@ public class MainForm : Form
     private TextBox _txtSoftNeg = null!;        // 负向软限位
     private Button _btnApplyLimits = null!;    // 应用软限位
     private Button _btnZeroPosition = null!;   // 归零
+    private Button _btnHome = null!;           // 复位找零（回零）
     private System.Windows.Forms.Timer? _axisTimer;  // 连接后轮询 Dpos
 
     // 运动控制
     private Button _btnForward = null!;
     private Button _btnBackward = null!;
     private Button _btnStop = null!;
+
+    // 轴状态灯（右下面板）：使能/±软限位/±硬限位/伺服报警
+    private Label _lampEnable = null!;
+    private Label _lampSoftPos = null!;
+    private Label _lampSoftNeg = null!;
+    private Label _lampHardPos = null!;
+    private Label _lampHardNeg = null!;
+    private Label _lampAlarm = null!;
 
     // 传感器
     private readonly TextBox[] _sensorRawBoxes = new TextBox[4];
@@ -69,7 +79,7 @@ public class MainForm : Form
     private void BuildUi()
     {
         Text = _useSimulator ? "电机控制器（模拟模式）" : "电机控制器（正运动 ZMotion）";
-        ClientSize = new Size(512, 920);
+        ClientSize = new Size(1004, 944);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -83,6 +93,8 @@ public class MainForm : Form
         BuildAxisPanel();
         BuildMotorPanel();
         BuildSensorPanel();
+        BuildWaveformPanel();
+        BuildStatusPanel();
 
         FormClosing += MainForm_FormClosing;
     }
@@ -152,21 +164,21 @@ public class MainForm : Form
         group.Controls.Add(new Label { Text = "速度：", Location = new Point(16, rowY2), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
         _txtSpeed = new TextBox { Location = new Point(70, rowY2 - 2), Size = new Size(72, tbH), Text = FromUnits(_config.ZMotion.Speed.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtSpeed);
-        group.Controls.Add(new Label { Text = "cm/s", Location = new Point(156, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(156, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
         group.Controls.Add(new Label { Text = "最低速度：", Location = new Point(220, rowY2), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
         _txtLspeed = new TextBox { Location = new Point(292, rowY2 - 2), Size = new Size(64, tbH), Text = FromUnits(_config.ZMotion.Lspeed.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtLspeed);
-        group.Controls.Add(new Label { Text = "cm/s", Location = new Point(360, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s", Location = new Point(360, rowY2), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第三行：加减速
         group.Controls.Add(new Label { Text = "加速度：", Location = new Point(16, rowY3), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
         _txtAccel = new TextBox { Location = new Point(70, rowY3 - 2), Size = new Size(72, tbH), Text = FromUnits(_config.ZMotion.Accel.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtAccel);
-        group.Controls.Add(new Label { Text = "cm/s²", Location = new Point(156, rowY3), Size = new Size(52, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(156, rowY3), Size = new Size(52, 20), ForeColor = Color.DimGray });
         group.Controls.Add(new Label { Text = "减速度：", Location = new Point(220, rowY3), Size = new Size(68, 20), TextAlign = ContentAlignment.MiddleRight });
         _txtDecel = new TextBox { Location = new Point(292, rowY3 - 2), Size = new Size(64, tbH), Text = FromUnits(_config.ZMotion.Decel.Value).ToString("0.####"), TextAlign = HorizontalAlignment.Right };
         group.Controls.Add(_txtDecel);
-        group.Controls.Add(new Label { Text = "cm/s²", Location = new Point(360, rowY3), Size = new Size(48, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm/s²", Location = new Point(360, rowY3), Size = new Size(48, 20), ForeColor = Color.DimGray });
 
         // 第四行：S 曲线 + 更新按钮
         group.Controls.Add(new Label { Text = "S曲线：", Location = new Point(16, rowY4), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
@@ -180,13 +192,15 @@ public class MainForm : Form
             float newUnits;
             if (TryParseFloat(_txtUnits.Text, out newUnits))
             {
-                if (_oldUnits == newUnits) return;
-                rate = _oldUnits / newUnits;
-                _oldUnits = newUnits;
-                _config.ZMotion.SoftLimitNeg.Value *= rate;
-                _config.ZMotion.SoftLimitPos.Value *= rate;
-                _txtSoftPos.Text = FromUnits(_config.ZMotion.SoftLimitPos.Value).ToString("0.####");
-                _txtSoftNeg.Text = FromUnits(_config.ZMotion.SoftLimitNeg.Value).ToString("0.####");
+                // 只有 Units 真的变了才缩放软限位（保持物理行程不变）
+                // 无论 Units 变没变，下面 ReadAndApplyParams + ApplyMotionParams 都要执行
+                if (_oldUnits != newUnits)
+                {
+                    rate = _oldUnits / newUnits;
+                    _oldUnits = newUnits;
+                    _config.ZMotion.SoftLimitNeg.Value *= rate;
+                    _config.ZMotion.SoftLimitPos.Value *= rate;
+                }
             }
             string? err = ReadAndApplyParams();
             if (err != null) { TipForm.Show(this, err, false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000)); return; }
@@ -197,6 +211,9 @@ public class MainForm : Form
                 try
                 {
                     zmc.ApplyMotionParams(rate);
+                    // Units 变了也要同步软限位（rate != 0 时 ApplyMotionParams 内部已经调了）
+                    if (rate == 0)
+                        zmc.ApplySoftLimits(_config.ZMotion.SoftLimitPos.Value, _config.ZMotion.SoftLimitNeg.Value);
                 }
                 catch (Exception ex)
                 {
@@ -216,7 +233,7 @@ public class MainForm : Form
         group.Controls.Add(new Label { Text = "当前位置：", Location = new Point(16, rowDpos), Size = new Size(70, 20), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray });
         _txtDpos = new TextBox { Location = new Point(90, rowDpos - 2), Size = new Size(110, tbH), Text = "--", TextAlign = HorizontalAlignment.Right, ReadOnly = true, Font = new Font("Consolas", 10), BackColor = Color.FromArgb(250, 248, 240) };
         group.Controls.Add(_txtDpos);
-        group.Controls.Add(new Label { Text = "cm", Location = new Point(204, rowDpos), Size = new Size(28, 20), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "mm", Location = new Point(204, rowDpos), Size = new Size(50, 20), ForeColor = Color.DimGray });
 
         // 第六行：负向软限位 + 正向软限位 + 应用按钮
         group.Controls.Add(new Label { Text = "负限位：", Location = new Point(16, rowLimit), Size = new Size(50, 20), TextAlign = ContentAlignment.MiddleRight });
@@ -228,16 +245,27 @@ public class MainForm : Form
         _btnApplyLimits = new Button { Text = "应用限位", Location = new Point(296, rowLimit - 3), Size = new Size(92, 28), Enabled = false };
         _btnApplyLimits.Click += BtnApplyLimits_Click;
         group.Controls.Add(_btnApplyLimits);
-        // 第七行：归零校准按钮
+        // 第七行：归零（移动到伺服存好的 0 点，真实定位运动）——放在“负限位”正下方
         _btnZeroPosition = new Button
         {
             Text = "归零",
-            Location = new Point(156, rowLimit + 33),
-            Size = new Size(92, 28),
+            Location = new Point(40, rowLimit + 33),
+            Size = new Size(80, 28),
             Enabled = true
         };
         _btnZeroPosition.Click += BtnZeroPosition_Click;
         group.Controls.Add(_btnZeroPosition);
+
+        // 第七行（续）：复位找零（双硬限位对中重标定，用于皮带打滑/零点漂移后恢复；与“归零=回到伺服存好的0点”不同）——放在“正限位”正下方
+        _btnHome = new Button
+        {
+            Text = "复位找零",
+            Location = new Point(210, rowLimit + 33),
+            Size = new Size(92, 28),
+            Enabled = false
+        };
+        _btnHome.Click += BtnHome_Click;
+        group.Controls.Add(_btnHome);
 
         Controls.Add(group);
     }
@@ -251,25 +279,108 @@ public class MainForm : Form
         try
         {
             zmc.ApplySoftLimits(ToUnits(posMm), ToUnits(negMm));
-            TipForm.Show(this, $"软限位已应用：{negMm} ~ {posMm} cm", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            TipForm.Show(this, $"软限位已应用：{negMm} ~ {posMm} mm", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
         }
         catch (Exception ex)
         {
             TipForm.Show(this, $"应用失败：{ex.Message}", false, 3000);
         }
     }
+    /// <summary>归零：后台线程把轴定位回到伺服存好的 0 点（真实运动），期间锁定相关按钮，完成后弹提。</summary>
     private void BtnZeroPosition_Click(object? sender, EventArgs e)
     {
         if (_device is not ZMotionDeviceController zmc) return;
-        try
+        if (!zmc.IsConnected) { TipForm.Show(this, "未连接，无法归零", false, 2000); return; }
+        if (zmc.IsHoming) return;
+        if (zmc.IsWaveformRunning)
         {
-            zmc.ZeroPosition();
-            TipForm.Show(this, "归零校准完成", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            TipForm.Show(this, "波形运行中，请先停止波形再归零", false, 2500);
+            return;
         }
-        catch (Exception ex)
+
+        SetZeroUi(true);
+        Task.Run(() =>
         {
-            TipForm.Show(this, $"归零校准失败：{ex.Message}", false, 3000);
+            string msg; bool ok;
+            try { zmc.MoveToServoZero(); msg = "已回到伺服 0 点（归零完成）"; ok = true; }
+            catch (Exception ex) { msg = "归零失败：" + ex.Message; ok = false; }
+            if (IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                SetZeroUi(false);
+                TipForm.Show(this, msg, ok, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            });
+        });
+    }
+
+    /// <summary>归零（移动到伺服0）期间的 UI：锁定该按钮与点动/找零，避免运动冲突。</summary>
+    private void SetZeroUi(bool busy)
+    {
+        bool connected = _device != null && _device.IsConnected;
+        bool homing = _device?.IsHoming ?? false;
+        _btnZeroPosition.Enabled = !busy && connected;
+        _btnZeroPosition.Text = busy ? "归零中…" : "归零";
+        _btnHome.Enabled = !busy && connected && !homing;
+        _btnForward.Enabled = !busy && connected && !homing;
+        _btnBackward.Enabled = !busy && connected && !homing;
+        _btnStop.Enabled = !busy && connected;
+    }
+
+    /// <summary>复位找零：后台线程执行回零（阻塞式），期间禁用点动/波形/找零按钮，完成后弹提。</summary>
+    private void BtnHome_Click(object? sender, EventArgs e)
+    {
+        if (_device is null || !_device.IsConnected)
+        {
+            TipForm.Show(this, "未连接，无法找零", false, 2000);
+            return;
         }
+        if (_device.IsHoming) return;
+        if (_device.IsWaveformRunning)
+        {
+            TipForm.Show(this, "波形运行中，请先停止波形再找零", false, 2500);
+            return;
+        }
+
+        var dev = _device;
+        SetHomingUi(true);
+        Task.Run(() =>
+        {
+            string msg; bool ok;
+            try
+            {
+                var r = dev.Home();
+                if (r is null)
+                {
+                    msg = "已用双硬限位对中重新标定零点";
+                }
+                else
+                {
+                    msg = $"已用双硬限位对中重新标定零点\n"
+                        + $"负限位 {r.NegLimitMm:+0.0;-0.0} mm，正限位 {r.PosLimitMm:+0.0;-0.0} mm\n"
+                        + $"全行程 {r.FullTravelMm:0.0} mm（半行程 {r.HalfTravelMm:0.0} mm）\n"
+                        + $"旧零点偏移 {r.CenterMm:+0.0;-0.0} mm（本次已纠正）";
+                }
+                ok = true;
+            }
+            catch (Exception ex) { msg = "找零失败：" + ex.Message; ok = false; }
+            if (IsDisposed) return;
+            BeginInvoke(() =>
+            {
+                SetHomingUi(false);
+                TipForm.Show(this, msg, ok, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            });
+        });
+    }
+
+    /// <summary>找零期间的 UI 状态：锁定手动运动/波形按钮，避免与回零运动冲突。</summary>
+    private void SetHomingUi(bool busy)
+    {
+        bool connected = _device != null && _device.IsConnected;
+        _btnHome.Enabled = !busy && connected;
+        _btnHome.Text = busy ? "找零中…" : "复位找零";
+        _btnForward.Enabled = !busy && connected;
+        _btnBackward.Enabled = !busy && connected;
+        _btnStop.Enabled = !busy && connected;
     }
 
     // ============================================================ 运动控制
@@ -297,6 +408,60 @@ public class MainForm : Form
 
         group.Controls.AddRange(new Control[] { _btnForward, _btnBackward, _btnStop });
         Controls.Add(group);
+    }
+
+    // ============================================================ 轴状态灯（右下空白区）
+
+    /// <summary>右下状态面板：使能、正/负软限位、正/负硬限位、伺服报警，随 _axisTimer 200ms 轮询刷新。</summary>
+    private void BuildStatusPanel()
+    {
+        var group = new GroupBox
+        {
+            Text = "轴状态",
+            Location = new Point(508, 790),   // 底边 920 与左列传感器面板对齐
+            Size = new Size(480, 130)
+        };
+
+        _lampEnable = MakeLamp("使能", 14, 34);
+        _lampSoftPos = MakeLamp("正软限位", 172, 34);
+        _lampSoftNeg = MakeLamp("负软限位", 330, 34);
+        _lampHardPos = MakeLamp("正硬限位", 14, 82);
+        _lampHardNeg = MakeLamp("负硬限位", 172, 82);
+        _lampAlarm = MakeLamp("伺服报警", 330, 82);
+
+        group.Controls.AddRange(new Control[] { _lampEnable, _lampSoftPos, _lampSoftNeg, _lampHardPos, _lampHardNeg, _lampAlarm });
+        Controls.Add(group);
+        UpdateStatusLamps(null);   // 初始未连接：全灰
+    }
+
+    private Label MakeLamp(string name, int x, int y) => new Label
+    {
+        Text = "○ " + name,
+        Location = new Point(x, y),
+        Size = new Size(150, 32),
+        TextAlign = ContentAlignment.MiddleCenter,
+        Font = new Font(Font.FontFamily, 9.5f, FontStyle.Bold),
+        BorderStyle = BorderStyle.FixedSingle,
+        BackColor = Color.FromArgb(248, 248, 248),
+        ForeColor = Color.Gray,
+    };
+
+    /// <summary>状态灯刷新：未触发/未知 = 灰○，触发 = 彩色●（使能绿，限位红，报警橙）。</summary>
+    private static void ApplyLamp(Label lamp, bool active, string name, Color activeColor)
+    {
+        lamp.ForeColor = active ? activeColor : Color.Gray;
+        lamp.Text = (active ? "● " : "○ ") + name;
+    }
+
+    private void UpdateStatusLamps(AxisStatusInfo? st)
+    {
+        if (IsDisposed) return;
+        ApplyLamp(_lampEnable, st?.Enabled ?? false, "使能", Color.SeaGreen);
+        ApplyLamp(_lampSoftPos, st?.PosSoftLimit ?? false, "正软限位", Color.Firebrick);
+        ApplyLamp(_lampSoftNeg, st?.NegSoftLimit ?? false, "负软限位", Color.Firebrick);
+        ApplyLamp(_lampHardPos, st?.PosHardLimit ?? false, "正硬限位", Color.DarkRed);
+        ApplyLamp(_lampHardNeg, st?.NegHardLimit ?? false, "负硬限位", Color.DarkRed);
+        ApplyLamp(_lampAlarm, st?.ServoAlarm ?? false, "伺服报警", Color.DarkOrange);
     }
 
     // ============================================================ 传感器
@@ -563,11 +728,13 @@ public class MainForm : Form
         _btnStop.Enabled = connected;
         _btnApplyLimits.Enabled = connected;
         _btnZeroPosition.Enabled = connected;
+        _btnHome.Enabled = connected && !(_device?.IsHoming ?? false);
         _txtTarget.Enabled = !connected;
         _txtTimeout.Enabled = !connected;
         _btnSearch.Enabled = !connected;  // 只有 Ethernet 模式，未连接时始终可搜索
 
         if (connected) StartAxisTimer(); else StopAxisTimer();
+        SetWaveformConnected(connected);
     }
 
     private void StartAxisTimer()
@@ -579,6 +746,11 @@ public class MainForm : Form
             if (_device is not ZMotionDeviceController zmc) return;
             try { _txtDpos.Text = FromUnits(zmc.GetCurrentDpos()).ToString("F4"); }
             catch { _txtDpos.Text = "--"; }
+            // 状态灯：读失败（瞬断/超时）按全灰处理，不打断轮询
+            AxisStatusInfo? st = null;
+            try { st = zmc.ReadAxisStatusInfo(); } catch { }
+            UpdateStatusLamps(st);
+            UpdateWaveformReadouts();
         };
         _axisTimer.Start();
     }
@@ -589,6 +761,7 @@ public class MainForm : Form
         _axisTimer?.Dispose();
         _axisTimer = null;
         if (_txtDpos != null && !IsDisposed) _txtDpos.Text = "--";
+        UpdateStatusLamps(null);   // 断开后状态灯全灰
     }
 
     // ============================================================ 参数读写
@@ -760,10 +933,10 @@ public class MainForm : Form
     private static bool TryParseInt(string? t, out int v) => int.TryParse(t, out v);
     private static bool TryParseFloat(string? t, out float v) => float.TryParse(t, out v);
 
-    /// <summary>UI 输入 (cm, cm/s, cm/s²) → config/PAC 内部 (units, units/s)：× GearDenominator / Lead</summary>
-    private float ToUnits(float cmValue) => cmValue * _config.ZMotion.GearDenominator.Value / _config.ZMotion.Lead.Value;
-    /// <summary>config/PAC 内部 (units, units/s) → UI 显示 (cm, cm/s, cm/s²)：× Lead / GearDenominator</summary>
-    private float FromUnits(float units) => units * _config.ZMotion.Lead.Value / _config.ZMotion.GearDenominator.Value;
+    /// <summary>UI 物理量 (mm, mm/s, mm/s²) → config/PAC 内部 (user units)。与 Waveforms.MotionUnits 的换算保持完全一致。</summary>
+    private float ToUnits(float mmValue) => mmValue / 10f * _config.ZMotion.GearDenominator.Value / _config.ZMotion.Lead.Value / _config.ZMotion.Units.Value;
+    /// <summary>config/PAC 内部 (user units) → UI 物理量 (mm, mm/s, mm/s²)。与 Waveforms.MotionUnits 的换算保持完全一致。</summary>
+    private float FromUnits(float u) => u * _config.ZMotion.Units.Value * _config.ZMotion.Lead.Value / _config.ZMotion.GearDenominator.Value * 10f;
 
     private static void SafeRun(Action action, Action<string> onError)
     {

@@ -24,7 +24,7 @@
         },
         "Units": {
             "Des": "脉冲当量 SetUnits：1 用户单位 = 多少脉冲（=1 即 1 units=1 pulse）",
-            "Value": 1.0
+            "Value": 1
         },
         "Lead": {
             "Des": "导程 cm：电机转一圈平台走多少cm",
@@ -36,35 +36,71 @@
         },
         "Lspeed": {
             "Des": "最低速度 units/s（SetLspeed 参数）",
-            "Value": 5000.0
+            "Value": 35714.285
         },
         "Speed": {
             "Des": "运行速度 units/s（SetSpeed 参数）",
-            "Value": 50000.0
+            "Value": 3571428.8
         },
         "Accel": {
             "Des": "加速度 units/s²（SetAccel 参数）",
-            "Value": 500000.0
+            "Value": 714285.75
         },
         "Decel": {
             "Des": "减速度 units/s²（SetDecel 参数）",
-            "Value": 500000.0
+            "Value": 3571428.8
         },
         "Sramp": {
             "Des": "S 曲线时间（ms，填 0 关闭）",
-            "Value": 0.0
+            "Value": 0
         },
         "SoftLimitPos": {
             "Des": "正向软限位坐标（units），SetPosLimit 参数",
-            "Value": 250000.0
+            "Value": 285714.28
         },
         "SoftLimitNeg": {
             "Des": "负向软限位坐标（units），SetNegPosLimit 参数",
-            "Value": -250000.0
+            "Value": -285714.28
         },
         "AtType": {
             "Des": "轴类型：1=本地脉冲 65=EtherCAT位置CSP 66=速度CSV 67=力矩CST",
             "Value": 65
+        },
+        "HomeSeekSpeedMmS": {
+            "Des": "找零低速（精确）搜寻速度（mm/s），撞限位精确段与回中末段用它，越慢越轻柔越准",
+            "Value": 20.0
+        },
+        "HomeCruiseSpeedMmS": {
+            "Des": "找零快速巡航速度（mm/s），远离限位的空行程快跑以缩短时间，接近限位/回中末段降回低速",
+            "Value": 60.0
+        },
+        "HomeCruiseAccelMmS2": {
+            "Des": "找零巡航加减速（mm/s2），高速段需更大加减速缩短爬坡",
+            "Value": 200.0
+        },
+        "HomeCreepZoneMm": {
+            "Des": "回中末段切为低速的提前距离（mm），距目标小于此值改用低速精确停靠",
+            "Value": 5.0
+        },
+        "HomeSeekAccelMmS2": {
+            "Des": "找零低速段加减速（mm/s2），低速小加减速降冲击",
+            "Value": 50.0
+        },
+        "HomeBackoffMm": {
+            "Des": "退出限位开关后再多退的余量（mm），脱离开关回差",
+            "Value": 2.0
+        },
+        "HomeCenterTolMm": {
+            "Des": "回到中点的到位容差（mm）",
+            "Value": 0.5
+        },
+        "HomePhaseTimeoutMs": {
+            "Des": "找零单阶段（撞限位/退出/回中）超时（毫秒），超时急停报错",
+            "Value": 30000
+        },
+        "HomeMaxTravelMm": {
+            "Des": "单向最大允许行程（mm），超过仍未触发限位判定限位未接并急停；应>半行程(约9cm)",
+            "Value": 200.0
         }
     },
     "Sensor": {
@@ -86,7 +122,7 @@
         },
         "Gravity": {
             "Des": "重力加速度 g (m/s²)",
-            "Value": 10.0
+            "Value": 10
         },
         "K": {
             "Des": "K",
@@ -95,17 +131,56 @@
         "ZeroOffsets": {
             "Des": "4 路传感器归零校准值（raw 原始码）",
             "Value": [
-                0,
-                0,
-                0,
-                0
+                1161,
+                520,
+                1199,
+                875
             ]
         }
+    },
+    "Waveform": {
+        "Mode": {
+            "Des": "模式：0=单正弦 1=多正弦叠加 2=方波 3=脉冲 4=伪随机PRTS",
+            "Value": 0
+        },
+        "ControlPeriodMs": {
+            "Des": "控制回路周期 dt（毫秒），逐拍下发速度",
+            "Value": 10
+        },
+        "AccelLimitMmS2": {
+            "Des": "峰值加速度上限 mm/s²，0=不校验",
+            "Value": 5000
+        },
+        "SineFreqHz": { "Des": "正弦频率 f (Hz)", "Value": 0.5 },
+        "SineStrokeMm": { "Des": "正弦行程幅值 S (mm)", "Value": 50 },
+        "SineBiasMmS": { "Des": "速度直流偏置 n0 (mm/s)", "Value": 0 },
+        "SinePhaseDeg": { "Des": "初相位 ψ (度)", "Value": 0 },
+        "SineDurationS": { "Des": "总时长 T (s)", "Value": 20 },
+        "SineDwellS": { "Des": "周期间歇 t (s)，0=无间歇", "Value": 0 },
+        "MsBaseFreqHz": { "Des": "多正弦基频 f0 (Hz)", "Value": 0.2 },
+        "MsCount": { "Des": "成分数 N（一般 16~32）", "Value": 16 },
+        "MsFundAmpMmS": { "Des": "基频幅值 A1 (mm/s)", "Value": 100 },
+        "MsDecayP": { "Des": "幅值衰减指数 p（Ak=A1/k^p）", "Value": 1.0 },
+        "MsPhaseMode": { "Des": "相位策略 0=全0 1=交替 2=随机", "Value": 0 },
+        "MsSeed": { "Des": "随机种子", "Value": 12345 },
+        "MsDurationS": { "Des": "多正弦总时长 T (s)", "Value": 30 },
+        "MsTable": { "Des": "显式分量表 \"f,A,φ;...\"（Hz,mm/s,度），非空覆盖规则；清空回规则法", "Value": "0.2,30,0;0.6,15,45;1.0,8,90;1.4,5,30" },
+        "SqWaypoints": { "Des": "方波途经点 \"P,v,t;...\"（mm,mm/s,t=到点停顿s）", "Value": "0,200,1;100,200,1" },
+        "SqCycles": { "Des": "方波循环次数 n", "Value": 3 },
+        "PuSpeedMmS": { "Des": "脉冲速度 v1 (mm/s)", "Value": 300 },
+        "PuDurations": { "Des": "脉冲宽度序列 \"t1,t2,..\"（s）", "Value": "0.5,0.3,0.2,0.1" },
+        "PuCycles": { "Des": "脉冲循环次数 n", "Value": 3 },
+        "PuGapS": { "Des": "脉冲间隔 gap (s)", "Value": 0.5 },
+        "PrtsV": { "Des": "PRTS 速度幅值 V (mm/s)", "Value": 200 },
+        "PrtsK": { "Des": "PRTS 每态保持拍数 K", "Value": 5 },
+        "PrtsS": { "Des": "PRTS 位置波动 S (mm)", "Value": 80 },
+        "PrtsDurationS": { "Des": "PRTS 总时长 T (s)", "Value": 60 },
+        "PrtsSeed": { "Des": "PRTS 随机种子", "Value": 2024 }
     },
     "Ui": {
         "TipDisplaySeconds": {
             "Des": "Tips 显示时长（秒）",
-            "Value": 3.0
+            "Value": 3
         }
     }
 }

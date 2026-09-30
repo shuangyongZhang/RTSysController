@@ -11,6 +11,8 @@ public sealed class AppConfig
 
     public SensorConfig Sensor { get; set; } = new();
 
+    public WaveformConfig Waveform { get; set; } = new();
+
     public UiConfig Ui { get; set; } = new();
 }
 
@@ -39,31 +41,31 @@ public sealed class ZMotionConfig
     /// <summary>脉冲当量：每 1 用户单位 = 多少脉冲（SetUnits 参数），=1 即 1 units = 1 pulse。</summary>
     public CfgValue<float> Units { get; set; } = new() { Value = 1.0f };
 
-    /// <summary>丝杆导程（mm）：电机转一圈，平台走多少 mm。</summary>
+    /// <summary>丝杆导程（cm，标定常量，UI 不直接编辑）：电机转一圈平台走多少 cm。MotionUnits 内部×10 换算为 mm。</summary>
     public CfgValue<float> Lead { get; set; } = new() { Value = 28.2857f };
 
     /// <summary>齿轮比分母：电机转一圈 = 多少脉冲。</summary>
     public CfgValue<int> GearDenominator { get; set; } = new() { Value = 100000 };
 
-    /// <summary>最低速度（mm/s），SetLspeed 参数。</summary>
+    /// <summary>最低速度（内部存 user units；UI 以 mm/s 显示），SetLspeed 参数。</summary>
     public CfgValue<float> Lspeed { get; set; } = new() { Value = 10.0f };
 
-    /// <summary>运行速度（mm/s），SetSpeed 参数。</summary>
+    /// <summary>运行速度（内部存 user units；UI 以 mm/s 显示），SetSpeed 参数。</summary>
     public CfgValue<float> Speed { get; set; } = new() { Value = 100.0f };
 
-    /// <summary>加速度（mm/s²），SetAccel 参数。</summary>
+    /// <summary>加速度（内部存 user units；UI 以 mm/s² 显示），SetAccel 参数。</summary>
     public CfgValue<float> Accel { get; set; } = new() { Value = 500.0f };
 
-    /// <summary>减速度（mm/s²），SetDecel 参数。</summary>
+    /// <summary>减速度（内部存 user units；UI 以 mm/s² 显示），SetDecel 参数。</summary>
     public CfgValue<float> Decel { get; set; } = new() { Value = 500.0f };
 
     /// <summary>S 曲线时间（ms），SetSramp 参数；填 0 关闭 S 曲线。</summary>
     public CfgValue<float> Sramp { get; set; } = new() { Value = 0.0f };
 
-    /// <summary>正向软限位坐标（物理单位 mm），SetPosLimit 参数。default +500000（相当于不生效）。</summary>
+    /// <summary>正向软限位（内部存 user units；UI 以 mm 显示），SetPosLimit 参数。default +500000（相当于不生效）。</summary>
     public CfgValue<float> SoftLimitPos { get; set; } = new() { Value = 500000.0f };
 
-    /// <summary>负向软限位坐标（物理单位 mm），SetNegPosLimit 参数。default -500000（相当于不生效）。</summary>
+    /// <summary>负向软限位（内部存 user units；UI 以 mm 显示），SetNegPosLimit 参数。default -500000（相当于不生效）。</summary>
     public CfgValue<float> SoftLimitNeg { get; set; } = new() { Value = -500000.0f };
 
     /// <summary>
@@ -75,6 +77,38 @@ public sealed class ZMotionConfig
     /// EtherCAT 总线驱动器必须设 65/66/67，不能用 1！
     /// </summary>
     public CfgValue<int> AtType { get; set; } = new() { Value = 65 };
+
+    /// <summary>
+    /// 找零方式：双硬限位对中。因本设备无原点开关，改为“向负限位走→触发→退出→向正限位走→触发→退出→取两端中点=零点”。
+    /// 机械限位是绝对基准，故能抵消硬限位撞碰后皮带打滑/丢步造成的零点漂移。
+    /// 下列参数均以物理量（mm / mm·s⁻¹）表达，代码内部换算为 user units。
+    /// </summary>
+    /// <summary>找零低速（精确）搜寻速度（mm/s）。撞限位精确段与回中末段用它，越慢接触越轻柔、触发点越准。默认 20mm/s。</summary>
+    public CfgValue<float> HomeSeekSpeedMmS { get; set; } = new() { Value = 20.0f };
+
+    /// <summary>找零快速巡航速度（mm/s）：远离限位的空行程用它快跑，大幅缩短找零时间；接近限位/回中末段再降到 HomeSeekSpeedMmS 低速精确触发，兼顾速度与接触轻柔（不额外加剧皮带打滑）。默认 60。</summary>
+    public CfgValue<float> HomeCruiseSpeedMmS { get; set; } = new() { Value = 60.0f };
+
+    /// <summary>找零巡航加减速（mm/s²）。高速段需要更大加减速以缩短爬坡。默认 200。</summary>
+    public CfgValue<float> HomeCruiseAccelMmS2 { get; set; } = new() { Value = 200.0f };
+
+    /// <summary>回中末段切换为低速的提前距离（mm）：距目标小于此值改用 HomeSeekSpeedMmS 精确停靠。默认 5。</summary>
+    public CfgValue<float> HomeCreepZoneMm { get; set; } = new() { Value = 5.0f };
+
+    /// <summary>找零低速段加减速（mm/s²），低速小加减速降低冲击。默认 50。</summary>
+    public CfgValue<float> HomeSeekAccelMmS2 { get; set; } = new() { Value = 50.0f };
+
+    /// <summary>退出限位开关后再多退的余量（mm），脱离开关回差。默认 2mm。</summary>
+    public CfgValue<float> HomeBackoffMm { get; set; } = new() { Value = 2.0f };
+
+    /// <summary>回到中点的到位容差（mm）。默认 0.5mm。</summary>
+    public CfgValue<float> HomeCenterTolMm { get; set; } = new() { Value = 0.5f };
+
+    /// <summary>找零单阶段（撞限位/退出/回中）超时（毫秒），超时急停报错，防卡死。默认 30000。</summary>
+    public CfgValue<int> HomePhaseTimeoutMs { get; set; } = new() { Value = 30000 };
+
+    /// <summary>单向最大允许行程（mm）：朝一个方向走这么多仍未触发限位即判定“限位没接/未映射”并急停。应 > 半行程(约9cm)。默认 200。</summary>
+    public CfgValue<float> HomeMaxTravelMm { get; set; } = new() { Value = 200.0f };
 
     // ---- 便捷取值 ----
     public int GetAxisNumber() => AxisNumber.Value;
@@ -145,6 +179,70 @@ public sealed class SensorConfig
         if (offsets != null) Array.Copy(offsets, dst, Math.Min(offsets.Length, 4));
         ZeroOffsets.Value = dst;
     }
+}
+
+/// <summary>运动波形参数（五种可复现轨迹模式）。</summary>
+public sealed class WaveformConfig
+{
+    /// <summary>模式：0=单正弦 1=多正弦叠加 2=方波 3=脉冲 4=伪随机PRTS。</summary>
+    public CfgValue<int> Mode { get; set; } = new() { Value = 0 };
+
+    /// <summary>控制回路周期 dt（毫秒），逐拍下发速度的时间步长。</summary>
+    public CfgValue<int> ControlPeriodMs { get; set; } = new() { Value = 10 };
+
+    /// <summary>峰值加速度上限（mm/s²），0=不校验。</summary>
+    public CfgValue<double> AccelLimitMmS2 { get; set; } = new() { Value = 5000 };
+
+    /// <summary>
+    /// 软限位保护开关：true=碰到软限位立即停止运动并提示；
+    /// false=忽略软限位，波形坚持把整个运动做完（运行期临时放开软限位、跳过超行程校验，硬限位仍有效）。
+    /// </summary>
+    public CfgValue<bool> EnforceSoftLimit { get; set; } = new() { Value = true };
+
+    // ---- 单正弦 ----
+    public CfgValue<double> SineFreqHz { get; set; } = new() { Value = 0.5 };
+    public CfgValue<double> SineStrokeMm { get; set; } = new() { Value = 50 };
+    public CfgValue<double> SineBiasMmS { get; set; } = new() { Value = 0 };
+    public CfgValue<double> SinePhaseDeg { get; set; } = new() { Value = 0 };
+    public CfgValue<double> SineDurationS { get; set; } = new() { Value = 20 };
+    public CfgValue<double> SineDwellS { get; set; } = new() { Value = 0 };
+
+    // ---- 多正弦叠加 ----
+    public CfgValue<double> MsBaseFreqHz { get; set; } = new() { Value = 0.2 };
+    public CfgValue<int> MsCount { get; set; } = new() { Value = 16 };
+    public CfgValue<double> MsFundAmpMmS { get; set; } = new() { Value = 100 };
+    public CfgValue<double> MsDecayP { get; set; } = new() { Value = 1.0 };
+    public CfgValue<int> MsPhaseMode { get; set; } = new() { Value = 0 };
+    public CfgValue<int> MsSeed { get; set; } = new() { Value = 12345 };
+    public CfgValue<double> MsDurationS { get; set; } = new() { Value = 30 };
+    /// <summary>显式分量表 "f,A,φ;..."（Hz, mm/s, 度），非空则覆盖规则法；清空回到规则生成。</summary>
+    public CfgValue<string> MsTable { get; set; } = new() { Value = "0.2,30,0;0.6,15,45;1.0,8,90;1.4,5,30" };
+
+    // ---- 方波 ----
+    /// <summary>途经点 "P,v,t;..."：目标位置 P(mm)、逼近速度 v(mm/s)、到点后停顿时间 t(s)。整表循环 SqCycles 次，终点停在最后一个途经点。</summary>
+    public CfgValue<string> SqWaypoints { get; set; } = new() { Value = "0,200,1;100,200,1" };
+    /// <summary>整表循环次数 n（≥1）：每循环依次经过所有途经点各一次。</summary>
+    public CfgValue<int> SqCycles { get; set; } = new() { Value = 3 };
+
+    // ---- 脉冲 ----
+    public CfgValue<double> PuSpeedMmS { get; set; } = new() { Value = 300 };
+    /// <summary>脉冲宽度序列 "t1,t2,t3,t4"（s）。</summary>
+    public CfgValue<string> PuDurations { get; set; } = new() { Value = "0.5,0.3,0.2,0.1" };
+    public CfgValue<int> PuCycles { get; set; } = new() { Value = 3 };
+    public CfgValue<double> PuGapS { get; set; } = new() { Value = 0.5 };
+
+    // ---- 伪随机 PRTS ----
+    public CfgValue<double> PrtsV { get; set; } = new() { Value = 200 };
+    public CfgValue<int> PrtsK { get; set; } = new() { Value = 5 };
+    public CfgValue<double> PrtsS { get; set; } = new() { Value = 80 };
+    public CfgValue<double> PrtsDurationS { get; set; } = new() { Value = 60 };
+    public CfgValue<int> PrtsSeed { get; set; } = new() { Value = 2024 };
+
+    // ---- 便捷取值 ----
+    public int GetMode() => Mode.Value;
+    public double GetDtSec() => Math.Max(0.001, ControlPeriodMs.Value / 1000.0);
+    public double GetAccelLimit() => AccelLimitMmS2.Value;
+    public bool GetEnforceSoftLimit() => EnforceSoftLimit.Value;
 }
 
 public sealed class UiConfig

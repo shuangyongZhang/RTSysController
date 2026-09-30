@@ -1,0 +1,24 @@
+namespace MotorControlApp.Waveforms;
+
+/// <summary>波形运行/校验用的物理限制（均在 mm 域）。AccelLimitMmS2 &lt;= 0 表示不校验加速度。</summary>
+public sealed class MotionLimits
+{
+    public MotionLimits(double negMm, double posMm, double accelLimitMmS2 = 0)
+    {
+        NegMm = negMm;
+        PosMm = posMm;
+        AccelLimitMmS2 = accelLimitMmS2;
+    }
+
+    /// <summary>负向软限位（mm），如 -100。</summary>
+    public double NegMm { get; }
+
+    /// <summary>正向软限位（mm），如 +100。</summary>
+    public double PosMm { get; }
+
+    /// <summary>峰值加速度上限（mm/s²），&lt;=0 不校验。</summary>
+    public double AccelLimitMmS2 { get; }
+
+    /// <summary>是否强制软限位：false 时校验器跳过超行程判定（由 UI 按开关设置）。</summary>
+    public bool EnforceSoftLimit { get; init; } = true;
+}
