@@ -141,7 +141,7 @@
   "Waveform": {
     "Mode": {
       "Des": "模式：0=单正弦 1=多正弦叠加 2=方波 3=脉冲 4=伪随机PRTS",
-      "Value": 0
+      "Value": 4
     },
     "ControlPeriodMs": {
       "Des": "控制回路周期 dt（毫秒），逐拍下发速度",
@@ -219,6 +219,10 @@
       "Des": "方波循环次数 n",
       "Value": 3
     },
+    "SqDecelMmS2": {
+      "Des": "方波减速度 (mm/s²)",
+      "Value": 5000
+    },
     "PuSpeedMmS": {
       "Des": "脉冲速度 v1 (mm/s)",
       "Value": 300
@@ -234,6 +238,10 @@
     "PuGapS": {
       "Des": "脉冲间隔 gap (s)",
       "Value": 0.5
+    },
+    "PuDecelMmS2": {
+      "Des": "脉冲减速度 (mm/s²)",
+      "Value": 5000
     },
     "PrtsV": {
       "Des": "PRTS 速度幅值 V (mm/s)",
@@ -254,6 +262,14 @@
     "PrtsSeed": {
       "Des": "PRTS 随机种子",
       "Value": 2024
+    },
+    "PrtsDecelMmS2": {
+      "Des": "PRTS 减速度 (mm/s²)",
+      "Value": 5000
+    },
+    "PrtsTable": {
+      "Des": "PRTS 显式逐拍速度序列 \"+,0,-,..\"或 mm/s 数值（非空覆盖规则生成）",
+      "Value": ""
     }
   },
   "Ui": {

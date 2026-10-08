@@ -3,7 +3,7 @@ namespace MotorControlApp.Waveforms;
 /// <summary>
 /// 单正弦转速控制（直线往复）：负载线速度按正弦 v(t)=An·sin(2πf·t+ψ)+n0 变化，
 /// 在行程内往返跑 T·f 个周期。速度幅值 An 与位置幅值 S 由 An=2πf·S 耦合，
-/// 峰值加速度 amax=(2πf)²·S。周期间可插入 dwell 秒的零速间歇（0=无间歇）。
+/// 峰值加速度 amax=(2πf)²·S。n0 为速度直流偏置（暂定0）。周期间可插入 dwell 秒的零速间歇（0=无间歇）。
 /// </summary>
 public sealed class SineGenerator : IWaveformGenerator
 {

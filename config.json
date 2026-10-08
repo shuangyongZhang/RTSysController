@@ -167,15 +167,19 @@
         "MsTable": { "Des": "显式分量表 \"f,A,φ;...\"（Hz,mm/s,度），非空覆盖规则；清空回规则法", "Value": "0.2,30,0;0.6,15,45;1.0,8,90;1.4,5,30" },
         "SqWaypoints": { "Des": "方波途经点 \"P,v,t;...\"（mm,mm/s,t=到点停顿s）", "Value": "0,200,1;100,200,1" },
         "SqCycles": { "Des": "方波循环次数 n", "Value": 3 },
+        "SqDecelMmS2": { "Des": "方波减速度 (mm/s²)", "Value": 5000 },
         "PuSpeedMmS": { "Des": "脉冲速度 v1 (mm/s)", "Value": 300 },
         "PuDurations": { "Des": "脉冲宽度序列 \"t1,t2,..\"（s）", "Value": "0.5,0.3,0.2,0.1" },
         "PuCycles": { "Des": "脉冲循环次数 n", "Value": 3 },
         "PuGapS": { "Des": "脉冲间隔 gap (s)", "Value": 0.5 },
+        "PuDecelMmS2": { "Des": "脉冲减速度 (mm/s²)", "Value": 5000 },
         "PrtsV": { "Des": "PRTS 速度幅值 V (mm/s)", "Value": 200 },
         "PrtsK": { "Des": "PRTS 每态保持拍数 K", "Value": 5 },
         "PrtsS": { "Des": "PRTS 位置波动 S (mm)", "Value": 80 },
         "PrtsDurationS": { "Des": "PRTS 总时长 T (s)", "Value": 60 },
-        "PrtsSeed": { "Des": "PRTS 随机种子", "Value": 2024 }
+        "PrtsSeed": { "Des": "PRTS 随机种子", "Value": 2024 },
+        "PrtsDecelMmS2": { "Des": "PRTS 减速度 (mm/s²)", "Value": 5000 },
+        "PrtsTable": { "Des": "PRTS 显式逐拍速度序列 \"+,0,-,..\"或 mm/s 数值（非空覆盖规则生成）", "Value": "" }
     },
     "Ui": {
         "TipDisplaySeconds": {

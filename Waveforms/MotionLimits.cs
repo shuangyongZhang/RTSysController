@@ -18,6 +18,12 @@ public sealed class MotionLimits
 
     /// <summary>峰值加速度上限（mm/s²），&lt;=0 不校验。</summary>
     public double AccelLimitMmS2 { get; }
+    
+    /// <summary>
+    /// 运行期减速度上限（mm/s²）：阶梯型模式（方波/脉冲/PRTS）可在各自页签单独设置。
+    /// &lt;=0 时运行期回退使用 <see cref="AccelLimitMmS2"/>。
+    /// </summary>
+    public double DecelLimitMmS2 { get; init; }
 
     /// <summary>是否强制软限位：false 时校验器跳过超行程判定（由 UI 按开关设置）。</summary>
     public bool EnforceSoftLimit { get; init; } = true;

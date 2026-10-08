@@ -914,11 +914,13 @@ public class ZMotionDeviceController : IDeviceController
         int axis = _cfg.ZMotion.GetAxisNumber();
         MotionUnits mu = _wfUnits;
         double accelLim = runtime.Limits.AccelLimitMmS2 > 0 ? runtime.Limits.AccelLimitMmS2 : 5000.0;
-
+        // 减速度：阶梯型模式（方波/脉冲/PRTS）从各自页签读取，<=0 时回退用加速度上限（与原行为一致）。
+        double decelLim = runtime.Limits.DecelLimitMmS2 > 0 ? runtime.Limits.DecelLimitMmS2 : accelLim;
+        
         // 运行期参数（失败不阻断，下一拍靠 Cancel 兼容）
         TryApi(() => zmcaux.ZAux_Direct_SetLspeed(_handle, axis, mu.MmSToUnitsPS(1.0)));
         TryApi(() => zmcaux.ZAux_Direct_SetAccel(_handle, axis, mu.MmS2ToUnitsPS2(accelLim)));
-        TryApi(() => zmcaux.ZAux_Direct_SetDecel(_handle, axis, mu.MmS2ToUnitsPS2(accelLim)));
+        TryApi(() => zmcaux.ZAux_Direct_SetDecel(_handle, axis, mu.MmS2ToUnitsPS2(decelLim)));
 
         runtime.Generator.Reset();
         _wfCts = new CancellationTokenSource();

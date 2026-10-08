@@ -30,21 +30,32 @@ public static class WaveformSampler
         var ts = new List<double>();
         var vs = new List<double>();
         var ps = new List<double>();
-        double t = 0, pos = 0;
+        double t = 0, pos = 0, prevV = 0;
         bool ended = false;
         int count = 0;
         double total = g.TotalDurationSeconds;
-
+        
         while (count < MaxTicks && t <= MaxSimSeconds)
         {
             double v = g.NextVelocity(t, pos);
-            pos += v * dtSec;
-
+            // 与 WaveformValidator.Simulate 保持一致：连续型用梯形法（首拍不产生位移），
+            // 阶梯型用左端点 pos += v*dt（逐拍恒速的物理模型，得到干净的整数台阶并回零）。
+            if (g.ContinuousVelocity)
+            {
+                if (count > 0)
+                    pos += (prevV + v) / 2 * dtSec;
+            }
+            else
+            {
+                pos += v * dtSec;
+            }
+        
             ts.Add(t);
             vs.Add(v);
             ps.Add(pos);
-
+        
             count++;
+            prevV = v;
             t += dtSec;
 
             bool byDuration = !double.IsPositiveInfinity(total) && t >= total;

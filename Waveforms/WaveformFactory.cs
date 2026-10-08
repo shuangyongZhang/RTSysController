@@ -46,9 +46,7 @@ public static class WaveformFactory
             WaveformMode.Pulse => new PulseGenerator(
                 w.PuSpeedMmS.Value, ParseDoubles(w.PuDurations.Value), Math.Max(1, w.PuCycles.Value), w.PuGapS.Value),
 
-            WaveformMode.Prts => new PrtsGenerator(
-                w.PrtsV.Value, Math.Max(1, w.PrtsK.Value), w.PrtsS.Value,
-                w.PrtsDurationS.Value, w.PrtsSeed.Value, dt),
+            WaveformMode.Prts => BuildPrts(w, dt),
 
             _ => throw new InvalidOperationException($"未知波形模式 {mode}"),
         };
@@ -70,16 +68,39 @@ public static class WaveformFactory
             w.MsBaseFreqHz.Value, Math.Clamp(w.MsCount.Value, 1, 64), w.MsFundAmpMmS.Value,
             w.MsDecayP.Value, phase, w.MsSeed.Value, w.MsDurationS.Value);
     }
+    
+    /// <summary>PRTS 构造：显式速度序列优先（逐拍原样下发），为空则回退规则法随机生成。</summary>
+    private static IWaveformGenerator BuildPrts(WaveformConfig w, double dt)
+    {
+        if (!string.IsNullOrWhiteSpace(w.PrtsTable.Value))
+        {
+            var seq = ParsePrtsSequence(w.PrtsTable.Value, w.PrtsV.Value);
+            return PrtsGenerator.CreateFromSequence(seq, dt);
+        }
+        return new PrtsGenerator(
+            w.PrtsV.Value, Math.Max(1, w.PrtsK.Value), w.PrtsS.Value,
+            w.PrtsDurationS.Value, w.PrtsSeed.Value, dt);
+    }
 
-    /// <summary>由软限位（units）换算成 mm 域的运行限制，并携带软限位保护开关状态。</summary>
+    /// <summary>由软限位（units）换算成 mm 域的运行限制，并携带软限位保护开关状态。
+    /// 阶梯型模式（方波/脉冲/PRTS）的减速度从各自页签读取；其余模式减速度沿用加速度上限。</summary>
     public static MotionLimits BuildLimits(AppConfig cfg, double accelLimitMmS2)
     {
         var mu = new MotionUnits(cfg.ZMotion);
         double posMm = mu.UnitsToMm(cfg.ZMotion.GetSoftLimitPos());
         double negMm = mu.UnitsToMm(cfg.ZMotion.GetSoftLimitNeg());
+        WaveformConfig w = cfg.Waveform;
+        double decel = (WaveformMode)w.GetMode() switch
+        {
+            WaveformMode.Square => w.SqDecelMmS2.Value,
+            WaveformMode.Pulse => w.PuDecelMmS2.Value,
+            WaveformMode.Prts => w.PrtsDecelMmS2.Value,
+            _ => accelLimitMmS2,
+        };
         return new MotionLimits(negMm, posMm, accelLimitMmS2)
         {
-            EnforceSoftLimit = cfg.Waveform.GetEnforceSoftLimit(),
+            EnforceSoftLimit = w.GetEnforceSoftLimit(),
+            DecelLimitMmS2 = decel,
         };
     }
 
@@ -127,6 +148,28 @@ public static class WaveformFactory
             }
         }
         if (list.Count == 0) throw new FormatException("多正弦分量表格式应为 \"f,A,φ;...\"");
+        return list;
+    }
+    
+    /// <summary>
+    /// 解析 PRTS 显式逐拍速度序列：每个 token 一拍，以逗号/空格/分号/制表符/换行分隔。
+    /// token 可为符号档位“+”/“-”/“0”（按速度幅值 V 取 ±V/0；也支持 p/m/P/M），或直接写 mm/s 数值（如 +100/-100/0）。
+    /// </summary>
+    public static IReadOnlyList<double> ParsePrtsSequence(string s, double V)
+    {
+        var list = new List<double>();
+        foreach (string tok in (s ?? string.Empty).Split(
+            new[] { ',', ' ', ';', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            switch (tok)
+            {
+                case "+": case "p": case "P": list.Add(V); continue;
+                case "-": case "m": case "M": list.Add(-V); continue;
+                case "0": list.Add(0); continue;
+            }
+            if (TryD(tok, out double v)) list.Add(v);   // 数值 mm/s（允许带符号，如 +100）
+        }
+        if (list.Count == 0) throw new FormatException("PRTS 显式速度序列为空或格式错误（用 +/0/- 或每拍 mm/s 数值，逗号/空格分隔）");
         return list;
     }
 

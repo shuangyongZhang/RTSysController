@@ -223,6 +223,8 @@ public sealed class WaveformConfig
     public CfgValue<string> SqWaypoints { get; set; } = new() { Value = "0,200,1;100,200,1" };
     /// <summary>整表循环次数 n（≥1）：每循环依次经过所有途经点各一次。</summary>
     public CfgValue<int> SqCycles { get; set; } = new() { Value = 3 };
+    /// <summary>方波运行期控制器减速度上限 (mm/s²)：到点/换向/停止时按此值减速。</summary>
+    public CfgValue<double> SqDecelMmS2 { get; set; } = new() { Value = 5000 };
 
     // ---- 脉冲 ----
     public CfgValue<double> PuSpeedMmS { get; set; } = new() { Value = 300 };
@@ -230,6 +232,8 @@ public sealed class WaveformConfig
     public CfgValue<string> PuDurations { get; set; } = new() { Value = "0.5,0.3,0.2,0.1" };
     public CfgValue<int> PuCycles { get; set; } = new() { Value = 3 };
     public CfgValue<double> PuGapS { get; set; } = new() { Value = 0.5 };
+    /// <summary>脉冲运行期控制器减速度上限 (mm/s²)：每脉冲回基位/换向时按此值减速。</summary>
+    public CfgValue<double> PuDecelMmS2 { get; set; } = new() { Value = 5000 };
 
     // ---- 伪随机 PRTS ----
     public CfgValue<double> PrtsV { get; set; } = new() { Value = 200 };
@@ -237,6 +241,10 @@ public sealed class WaveformConfig
     public CfgValue<double> PrtsS { get; set; } = new() { Value = 80 };
     public CfgValue<double> PrtsDurationS { get; set; } = new() { Value = 60 };
     public CfgValue<int> PrtsSeed { get; set; } = new() { Value = 2024 };
+    /// <summary>PRTS 运行期控制器减速度上限 (mm/s²)：速度态切换/回零时按此值减速。</summary>
+    public CfgValue<double> PrtsDecelMmS2 { get; set; } = new() { Value = 5000 };
+    /// <summary>显式逐拍速度序列（每拍一个 token：+/0/- 或 mm/s 数值，逗号/空格分隔）；非空则覆盖规则生成，逐拍原样下发（不做前瞻/回零）。</summary>
+    public CfgValue<string> PrtsTable { get; set; } = new() { Value = "" };
 
     // ---- 便捷取值 ----
     public int GetMode() => Mode.Value;

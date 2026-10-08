@@ -49,8 +49,20 @@ public static class WaveformValidator
         {
             double v = g.NextVelocity(t, pos);
             double a = count == 0 ? 0 : Math.Abs(v - prevV) / dtSec;
-
-            pos += v * dtSec;
+            
+            // 位置积分按波形类型区分：
+            //  连续型（单/多正弦）→ 梯形法且首拍不产生位移，消除左端点求和的系统性直流偏移；
+            //  阶梯型（方波/脉冲/PRTS）→ 本拍速度在本拍全程作用，用左端点 pos += v*dt 才符合
+            //    “逐拍恒速”物理模型（梯形法会把台阶拐角平均掉、且使阶梯波位置不再回到 0）。
+            if (g.ContinuousVelocity)
+            {
+                if (count > 0)
+                    pos += (prevV + v) / 2 * dtSec;
+            }
+            else
+            {
+                pos += v * dtSec;
+            }
 
             maxAbsV = Math.Max(maxAbsV, Math.Abs(v));
             maxA = Math.Max(maxA, a);

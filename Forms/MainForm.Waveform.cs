@@ -35,6 +35,11 @@ public partial class MainForm
     private readonly Dictionary<string, TextBox>[] _modeInputs = new Dictionary<string, TextBox>[5];
     private WaveformSimResult? _wfLastResult;
     private bool _wfSubscribed;
+    
+    // 单正弦 f/S/An/amax 四量耦合联动：记录用户最近直接编辑的字段（作为反推基准），
+    // 并在程序性回填派生量时抑制 TextChanged，避免重入与把回填误判为用户编辑。
+    private string _sineEditKey = "S";
+    private bool _suppressSineLinkage;
 
     // 实时读数：相邻两拍速度差分算加速度
     private double _rdLastV;
@@ -176,7 +181,12 @@ public partial class MainForm
             if (hint.Length > 0) _tip.SetToolTip(lbl, hint);
             page.Controls.Add(lbl);
             var tb = new TextBox { Location = new Point(x + 124, y), Size = new Size(col == 0 ? 92 : 96, 21), Text = initial };
-            tb.TextChanged += (_, _) => ValidateNow();
+            tb.TextChanged += (_, _) =>
+            {
+                if (_suppressSineLinkage) return;                 // 忽略联动回填触发的程序性 TextChanged
+                if (key is "f" or "S" or "An" or "amax") _sineEditKey = key;  // 记住用户直接编辑的耦合字段
+                ValidateNow();
+            };
             if (hint.Length > 0) _tip.SetToolTip(tb, hint);
             page.Controls.Add(tb);
             dict[key] = tb;
@@ -192,7 +202,7 @@ public partial class MainForm
             page.Controls.Add(lblW);
             y += 20;
             var tbW = new TextBox { Location = new Point(baseX, y), Size = new Size(438, 24), Text = initial };
-            tbW.TextChanged += (_, _) => ValidateNow();
+            tbW.TextChanged += (_, _) => { if (!_suppressSineLinkage) ValidateNow(); };
             if (hint.Length > 0) _tip.SetToolTip(tbW, hint);
             page.Controls.Add(tbW);
             dict[key] = tbW;
@@ -209,11 +219,14 @@ public partial class MainForm
         switch (mode)
         {
             case WaveformMode.Sine:
-                yield return ("频率 f (Hz)", "f", N(w.SineFreqHz.Value), false, "正弦速度频率 f：位置在 ±S/2 内按正弦往复，每 1/f 秒往复一次。受控制周期限制：f·dt 建议 ≤0.05（如 dt=10ms 时 f 建议 ≤5Hz）。行程窗 [−S/2, +S/2] 由启动前校验对照软限位。");
-                yield return ("行程幅值 S (mm)", "S", N(w.SineStrokeMm.Value), false, "全行程峰峰值 S：位置在 −S/2 到 +S/2 之间变化（不是单边幅值）。S 需 ≤ 软限位窗口宽度，否则超行程（关闭软限位保护后不再拦，但会冲出限位窗，注意机械行程安全）。");
+                double omega0 = 2 * Math.PI * w.SineFreqHz.Value;
+                yield return ("频率 f (Hz)", "f", N(w.SineFreqHz.Value), false, "正弦速度频率 f：与行程幅值 S 共同决定峰值速度/加速度（An=2πf·S，amax=(2πf)²·S），四个量相互约束，改任一个其他会跟着变。受控制周期限制：f·dt 建议 ≤0.05（如 dt=10ms 时 f 建议 ≤5Hz）。");
+                yield return ("行程幅值 S (mm)", "S", N(w.SineStrokeMm.Value), false, "单边幅值 S：位置在“S·cosψ−S”到“S·cosψ+S”之间摆动（ψ=±90° 时才是关于 0 对称的 [−S,+S]，ψ=0° 时实际是 [0,2S]），峰峰值=2S。S 需 ≤ 软限位窗口宽度，否则超行程（关闭软限位保护后不再拦，但会冲出限位窗，注意机械行程安全）。");
+                yield return ("峰值速度 An (mm/s)", "An", N(omega0 * w.SineStrokeMm.Value), false, "速度正弦峰值 An=2πf·S，对应需求文档中的“正弦转速幅值”。可直接修改此框，系统会反推行程幅值 S（保持 f 不变）。");
+                yield return ("峰值加速度 amax (mm/s²)", "amax", N(omega0 * omega0 * w.SineStrokeMm.Value), false, "加速度峰值 amax=(2πf)²·S。可直接修改此框，系统会反推行程幅值 S（保持 f 不变），并与“加速度上限”校验项配合判限。");
                 yield return ("速度偏置 n0 (mm/s)", "n0", N(w.SineBiasMmS.Value), false, "叠加在正弦上的恒速偏置 n0：>0 整体向正方向漂移，轨迹不再对称于 0 点，容易单侧冲出软限位；一般保持 0。");
-                yield return ("初相位 (度)", "psi", N(w.SinePhaseDeg.Value), false, "初相位 φ（度）：决定 t=0 时刻在正弦周期中的位置，只平移时间轴，不改变波形形状与行程。");
-                yield return ("总时长 T (s)", "T", N(w.SineDurationS.Value), false, "总运行时长 T（秒），到时自动停止。");
+                yield return ("初相位 (度)", "psi", N(w.SinePhaseDeg.Value), false, "初相位 φ（度）：决定 t=0 时刻在正弦周期中的位置，只平移时间轴，不改变波形形状与行程（但会改变行程区间相对 0 点的对称中心，见行程幅值说明）。");
+                yield return ("总时长 T (s)", "T", N(w.SineDurationS.Value), false, "总运行时长 T（秒），到时自动停止。T·f 即周期数量。");
                 yield return ("周期间歇 t (s)", "t", N(w.SineDwellS.Value), false, "每个正弦周期结束后的零速停顿 t（秒），0=连续运行不间歇。");
                 break;
             case WaveformMode.MultiSine:
@@ -228,12 +241,14 @@ public partial class MainForm
                 break;
             case WaveformMode.Square:
                 yield return ("循环次数 n", "n", w.SqCycles.Value.ToString(Inv), false, "整条途经点表循环执行 n 遍；每遍依次到达每个途经点并停顿。最后一遍结束后停在最后一个途经点。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.SqDecelMmS2.Value), false, "方波运行期控制器的减速度上限（mm/s²）：到点/方向切换/停止时按此值减速。阶梯型波形的实际加减速由控制器钳制，此值不参与时域波形判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
                 yield return ("途经点 P,v,t;... (mm,mm/s,t=到点停顿s)", "wps", w.SqWaypoints.Value, true, "途经点序列“P,v,t”分号分隔：目标位置 P(mm，相对启动时原地置零后的 0 点)、逼近速度 v(mm/s)、到点后停顿 t(s)。位置反馈判到达，途经点 P 必须落在软限位窗内（关闭软限位保护后限位处不停，注意机械行程）。");
                 break;
             case WaveformMode.Pulse:
                 yield return ("脉冲速度 v1 (mm/s)", "v1", N(w.PuSpeedMmS.Value), false, "脉冲速度 v1：每个脉冲前半 +v1 冲出、后半 −v1 回基位，净位移 0。单个脉冲最大偏离 = v1×ti/2。");
                 yield return ("循环次数 n", "n", w.PuCycles.Value.ToString(Inv), false, "整个脉冲序列（含所有宽度和间隔）循环执行 n 遍。");
                 yield return ("脉冲间隔 gap (s)", "gap", N(w.PuGapS.Value), false, "相邻脉冲间的零速间隔 gap（秒），0=脉冲背靠背连续执行。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.PuDecelMmS2.Value), false, "脉冲运行期控制器的减速度上限（mm/s²）：每脉冲回基位/换向时按此值减速。阶梯型波形由控制器钳制，此值不参与时域判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
                 yield return ("脉冲宽度 t1,t2,t3,t4 (s)", "durs", w.PuDurations.Value, true, "脉冲宽度序列“t1,t2,...”逗号分隔（秒）：每个 ti 拆成前半加速、后半回基位，按顺序执行并整体循环 n 次。");
                 break;
             case WaveformMode.Prts:
@@ -242,6 +257,8 @@ public partial class MainForm
                 yield return ("位置波动 S (mm)", "S", N(w.PrtsS.Value), false, "位置波动约束 ±S（mm）：序列生成时前瞻约束保证位置始终在 [−S, +S] 内且周期末归零。S 需 ≤ 软限位窗半宽（关闭软限位保护后不再拦）。");
                 yield return ("总时长 T (s)", "T", N(w.PrtsDurationS.Value), false, "总运行时长 T（秒）：到时后自动追加回零段使末端位置≈ 0。");
                 yield return ("随机种子", "seed", w.PrtsSeed.Value.ToString(Inv), false, "固定种子离线生成整条速度序列：相同参数+种子每次轨迹完全一致（可复现）。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.PrtsDecelMmS2.Value), false, "PRTS 运行期控制器的减速度上限（mm/s²）：速度态切换/回零时按此值减速。阶梯型波形由控制器钳制，此值不参与时域判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("显式逐拍速度序列 +/0/- 或mm/s(留空=按规则生成)", "table", w.PrtsTable.Value, true, "逐拍指定速度：每个 token 一拍，用逗号/空格/分号分隔；token 写 + / - / 0 代表±V与零速（V 取上方“速度幅值”），也可直接写 mm/s 数值（如 +100,-100,0）。非空则覆盖 K/S/T/种子等规则参数，逐拍原样下发（不前瞻、不回零）；位置=序列积分，超行程由校验器判限，如需末尾回零请自行在尾部补反向拍。清空回到规则生成。");
                 break;
         }
     }
@@ -437,8 +454,13 @@ public partial class MainForm
     private void RefreshActiveTab()
     {
         var dict = _modeInputs[(int)ActiveMode()];
-        foreach (var (_, key, initial, _, _) in ParamDefs(ActiveMode()))
-            if (dict.TryGetValue(key, out var tb)) tb.Text = initial;
+        _suppressSineLinkage = true;   // 切页/复位回填：不视为用户编辑，不改动 _sineEditKey
+        try
+        {
+            foreach (var (_, key, initial, _, _) in ParamDefs(ActiveMode()))
+                if (dict.TryGetValue(key, out var tb)) tb.Text = initial;
+        }
+        finally { _suppressSineLinkage = false; }
     }
 
     // ==================== 输入 <-> config ====================
@@ -467,13 +489,45 @@ public partial class MainForm
         {
             case WaveformMode.Sine:
                 if (!D("f", out double f) || f <= 0) { error = "频率格式错误"; return false; }
-                if (!D("S", out double S) || S <= 0) { error = "行程幅值格式错误"; return false; }
+                double omega = 2 * Math.PI * f;
+                // f/S/An/amax 四量耦合（An=ω·S，amax=ω²·S）：以用户最近直接编辑的一项为基准反推其余，
+                // 保持 f 不变（编辑 f 时则保持 S 不变，An/amax 跟随重算）。
+                double S;
+                switch (_sineEditKey)
+                {
+                    case "An":
+                        if (!D("An", out double anIn) || anIn <= 0) { error = "峰值速度格式错误"; return false; }
+                        S = anIn / omega;
+                        break;
+                    case "amax":
+                        if (!D("amax", out double amaxIn) || amaxIn <= 0) { error = "峰值加速度格式错误"; return false; }
+                        S = amaxIn / (omega * omega);
+                        break;
+                    default: // "f" 或 "S"：以行程幅值 S 为基准
+                        if (!D("S", out double sIn) || sIn <= 0) { error = "行程幅值格式错误"; return false; }
+                        S = sIn;
+                        break;
+                }
                 if (!D("n0", out double n0)) { error = "偏置格式错误"; return false; }
                 if (!D("psi", out double psi)) { error = "初相位格式错误"; return false; }
                 if (!D("T", out double T) || T <= 0) { error = "总时长格式错误"; return false; }
                 if (!D("t", out double t)) { error = "间歇格式错误"; return false; }
                 w.SineFreqHz.Value = f; w.SineStrokeMm.Value = S; w.SineBiasMmS.Value = n0;
                 w.SinePhaseDeg.Value = psi; w.SineDurationS.Value = T; w.SineDwellS.Value = Math.Max(0, t);
+                // 反算派生量并回填文本框（跳过用户正在编辑的那一格，避免打断输入；抑制联动防重入）
+                double anOut = omega * S, amaxOut = omega * omega * S;
+                string NF(double v) => v.ToString("0.###", Inv);
+                void SetBox(string k, string val)
+                {
+                    if (k == _sineEditKey) return;
+                    if (dict.TryGetValue(k, out var box) && box.Text != val) box.Text = val;
+                }
+                _suppressSineLinkage = true;
+                try
+                {
+                    SetBox("S", NF(S)); SetBox("An", NF(anOut)); SetBox("amax", NF(amaxOut));
+                }
+                finally { _suppressSineLinkage = false; }
                 break;
 
             case WaveformMode.MultiSine:
@@ -491,15 +545,17 @@ public partial class MainForm
 
             case WaveformMode.Square:
                 if (!I("n", out int n) || n < 1) { error = "循环次数格式错误"; return false; }
-                w.SqCycles.Value = n; w.SqWaypoints.Value = Get("wps");
+                if (!D("decel", out double sqDecel) || sqDecel < 0) { error = "减速度格式错误"; return false; }
+                w.SqCycles.Value = n; w.SqWaypoints.Value = Get("wps"); w.SqDecelMmS2.Value = sqDecel;
                 break;
 
             case WaveformMode.Pulse:
                 if (!D("v1", out double v1) || v1 <= 0) { error = "脉冲速度格式错误"; return false; }
                 if (!I("n", out int np) || np < 1) { error = "循环次数格式错误"; return false; }
                 if (!D("gap", out double gap)) { error = "间隔格式错误"; return false; }
+                if (!D("decel", out double puDecel) || puDecel < 0) { error = "减速度格式错误"; return false; }
                 w.PuSpeedMmS.Value = v1; w.PuCycles.Value = np; w.PuGapS.Value = Math.Max(0, gap);
-                w.PuDurations.Value = Get("durs");
+                w.PuDurations.Value = Get("durs"); w.PuDecelMmS2.Value = puDecel;
                 break;
 
             case WaveformMode.Prts:
@@ -508,8 +564,10 @@ public partial class MainForm
                 if (!D("S", out double Sp) || Sp <= 0) { error = "位置波动格式错误"; return false; }
                 if (!D("T", out double Tp) || Tp <= 0) { error = "总时长格式错误"; return false; }
                 if (!I("seed", out int seeds)) seeds = 0;
+                if (!D("decel", out double prtsDecel) || prtsDecel < 0) { error = "减速度格式错误"; return false; }
                 w.PrtsV.Value = V; w.PrtsK.Value = K; w.PrtsS.Value = Sp;
-                w.PrtsDurationS.Value = Tp; w.PrtsSeed.Value = seeds;
+                w.PrtsDurationS.Value = Tp; w.PrtsSeed.Value = seeds; w.PrtsDecelMmS2.Value = prtsDecel;
+                w.PrtsTable.Value = Get("table");
                 break;
         }
 

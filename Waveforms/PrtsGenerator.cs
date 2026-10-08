@@ -11,6 +11,7 @@ public sealed class PrtsGenerator : IWaveformGenerator
     private readonly double[] _schedule;   // 每拍速度 (mm/s)
     private readonly double _dt;
     private readonly double _duration;
+    private int _tick;                     // 内部拍计数器（不依赖墙钟时间，消除 Timer 抖动致索引跳/重）
 
     public PrtsGenerator(double stateSpeedMmS, int picksPerStateK, double boundMmS,
         double durationSec, int seed, double dtSec)
@@ -55,11 +56,18 @@ public sealed class PrtsGenerator : IWaveformGenerator
         }
 
         // 末端追加回零段，保证周期末 x≈0
-        const double posTol = 0.5;                  // mm
+        // 容差必须 >= 一拍全速位移，否则位置在 ±V*dt 间来回振荡永不收敛
+        double posTol = Math.Max(0.5, V * _dt);
         int guard = 0;
         while (Math.Abs(pos) > posTol && guard++ < 4096)
         {
-            double v = Math.Sign(pos) > 0 ? -V : V;
+            // 若剩余距离不足一拍全速位移，直接停住避免越零振荡
+            double stepDist = V * _dt;
+            double v;
+            if (Math.Abs(pos) <= stepDist)
+                v = 0;
+            else
+                v = Math.Sign(pos) > 0 ? -V : V;
             pos += v * _dt;
             list.Add(v);
         }
@@ -68,6 +76,26 @@ public sealed class PrtsGenerator : IWaveformGenerator
 
         _schedule = list.ToArray();
         _duration = _schedule.Length * _dt;
+    }
+    
+    /// <summary>
+    /// 由“显式速度序列”直接构造：逐拍原样下发（不做前瞻约束、不自动回零），
+    /// 用于 100% 复现任意手绘/指定的三态形状。位置为序列的积分，是否超行程由校验器判限。
+    /// </summary>
+    public static PrtsGenerator CreateFromSequence(IReadOnlyList<double> scheduleMmS, double dtSec)
+    {
+        ArgumentNullException.ThrowIfNull(scheduleMmS);
+        if (scheduleMmS.Count == 0) throw new ArgumentException("显式速度序列不能为空", nameof(scheduleMmS));
+        if (dtSec <= 0) throw new ArgumentOutOfRangeException(nameof(dtSec), "控制周期必须 > 0");
+        return new PrtsGenerator(scheduleMmS.ToArray(), dtSec);
+    }
+    
+    // 显式序列用的私有构造：直接持有逐拍速度表，时长 = 拍数 × dt。
+    private PrtsGenerator(double[] schedule, double dtSec)
+    {
+        _schedule = schedule;
+        _dt = dtSec;
+        _duration = schedule.Length * dtSec;
     }
 
     private static double PickState(Random rnd, double V, double pos, double dt, int kHold, double limit)
@@ -96,15 +124,17 @@ public sealed class PrtsGenerator : IWaveformGenerator
 
     public double TotalDurationSeconds => _duration;
 
-    public void Reset() { /* 序列已离线确定，无内部状态 */ }
+    public void Reset() => _tick = 0;
 
     public double NextVelocity(double tSec, double curPosMm)
     {
-        int tick = (int)(tSec / _dt);
+        // 用内部拍计数器而非墙钟 t/dt：实时循环中 PeriodicTimer 有 OS 抖动，
+        // (int)(t/dt) 可能重复或跳过某些拍，导致显式序列不能逐拍精确下发。
+        int tick = _tick++;
         if (tick < 0) tick = 0;
         if (tick >= _schedule.Length) return 0;
         return _schedule[tick];
     }
 
-    public bool IsFinished(double tSec) => tSec >= _duration;
+    public bool IsFinished(double tSec) => _tick >= _schedule.Length || tSec >= _duration;
 }
