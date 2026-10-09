@@ -71,7 +71,10 @@ public sealed class TipForm : Form
 
     /// <summary>
     /// 在宿主窗口顶部居中位置显示一条 Tips。
+    /// 同一宿主上多条提示垂直堆叠，避免后一条盖住前一条（如“归零失败”被“波形已完成”遮住）。
     /// </summary>
+    private static readonly List<TipForm> _opened = new();
+
     public static void Show(IWin32Window owner, string message, bool success, int displayMs = 3000)
     {
         var tip = new TipForm(message, success, displayMs);
@@ -79,7 +82,7 @@ public sealed class TipForm : Form
         if (owner is Form host && !host.IsDisposed)
         {
             int x = host.Left + (host.Width - tip.Width) / 2;
-            int y = host.Top + 56;
+            int y = host.Top + 56 + 44 * _opened.Count(t => !t.IsDisposed && t.Owner == host);
             tip.Location = new Point(x, y);
         }
         else
@@ -87,6 +90,8 @@ public sealed class TipForm : Form
             tip.StartPosition = FormStartPosition.CenterScreen;
         }
 
+        _opened.Add(tip);
+        tip.FormClosed += (_, _) => _opened.Remove(tip);
         tip.Show(owner);
     }
 }

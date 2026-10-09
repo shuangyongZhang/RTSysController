@@ -27,4 +27,10 @@ public sealed class MotionLimits
 
     /// <summary>是否强制软限位：false 时校验器跳过超行程判定（由 UI 按开关设置）。</summary>
     public bool EnforceSoftLimit { get; init; } = true;
+
+    /// <summary>
+    /// 行程动态放大系数 K（≥1）：快速换向激发出的机械/伺服动态超调使实测振幅大于指令振幅，
+    /// 校验时把预测包络中心不变、半幅×K 展开。1=不放大（跟随模型本身不含此效应）。
+    /// </summary>
+    public double DynAmpK { get; init; } = 1.0;
 }

@@ -224,21 +224,41 @@ public class ZMotionDeviceController : IDeviceController
             LimitTriggered?.Invoke(this, $"归零前硬限位脱困：{eDiag}");
         }
 
-        // 绝对定位到坐标 0（= 伺服存好的 0 点）
-        ThrowRc(zmcaux.ZAux_Direct_Single_MoveAbs(_handle, axis, 0f), $"归零 MoveAbs({axis},0)");
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        bool done = false;
-        while (sw.ElapsedMilliseconds < timeoutMs)
+        // 绝对定位到坐标 0（= 伺服存好的 0 点），并做到位确认：
+        // MoveAbs 刚下发后轴可能还未被控制器调度启动，只看 IfIdle 会读到上一段停止后的
+        // “空闲”态，把还没动的轴误判成归零完成（实测：停在 -18.8mm 且无任何报警）。
+        // 因此以 Dpos 收敛到 0 附近为到位标准；连续“空闲且位置不变”说明指令没被执行，
+        // 提前结束等待，停稳后补发一次 MoveAbs 再等，仍未到才带位置回读报错。
+        float arriveTol = Math.Max(2f, tolUnits * 2f);   // 到位判定容差（user units，给伺服跟随波动留余量）
+        for (int attempt = 0; ; attempt++)
         {
-            Thread.Sleep(50);
-            int idle = 0;
-            zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref idle);   // IfIdle:0=运行 1=停止
-            if (idle != 0) { done = true; break; }
-        }
-        if (!done)
-        {
+            ThrowRc(zmcaux.ZAux_Direct_Single_MoveAbs(_handle, axis, 0f), $"归零 MoveAbs({axis},0)");
+            int waitMs = attempt == 0 ? timeoutMs : Math.Min(timeoutMs, 10000);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool arrived = false;
+            float pos = 0, lastPos = float.NaN;
+            int idleSameMs = 0;
+            while (sw.ElapsedMilliseconds < waitMs)
+            {
+                Thread.Sleep(50);
+                int idle = 0;
+                zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref idle);   // IfIdle:0=运行 1=停止
+                if (idle == 0) { idleSameMs = 0; continue; }
+                zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref pos);
+                if (Math.Abs(pos) <= arriveTol) { arrived = true; break; }
+                // 空闲但位置在变（减速中/重新规划）不算卡死，只有长时间原地不动才提前退出
+                if (Math.Abs(pos - lastPos) < 0.5f) idleSameMs += 50; else idleSameMs = 0;
+                lastPos = pos;
+                if (idleSameMs >= 1500) break;
+            }
+            if (arrived) return;
+
             TryApi(() => zmcaux.ZAux_Direct_Single_Cancel(_handle, axis, 2));
-            throw new InvalidOperationException($"归零超时（{timeoutMs / 1000}s 未回到 0 点），已减速停止。请确认伺服 0 点可达、且坐标已与驱动器对齐。");
+            if (attempt == 0) { Thread.Sleep(500); continue; }   // 彻底停稳后补发一次，排除首条指令未被执行
+            float stopMm = pos * 10f * z.Lead.Value * z.Units.Value / z.GearDenominator.Value;
+            throw new InvalidOperationException(
+                $"归零未到位：补发 MoveAbs 后位置仍停在 {stopMm:F1} mm，轴没有执行运动指令。" +
+                "请确认伺服 0 点可达、坐标已与驱动器对齐，并检查轴使能状态。");
         }
     }
 
@@ -929,6 +949,15 @@ public class ZMotionDeviceController : IDeviceController
         _ = Task.Run(() => WaveformLoopAsync(runtime, axis, token), token);
     }
 
+    /// <summary>上次波形运行按逐周期校正统计的实测漂移速率（mm/min，±为物理方向）；未开启校正时无意义（=0）。</summary>
+    public double LastWfDriftMmPerMin { get; private set; }
+
+    /// <summary>上次运行累计被校正抵消的漂移量（mm，含方向）。</summary>
+    public double LastWfDriftMm { get; private set; }
+
+    /// <summary>上次运行结束时参考位置与实际位置的残余误差（mm）。</summary>
+    public double LastWfCorrResidualMm { get; private set; }
+
     private async Task WaveformLoopAsync(WaveformRuntime rt, int axis, CancellationToken ct)
     {
         MotionUnits mu = _wfUnits!;
@@ -937,6 +966,15 @@ public class ZMotionDeviceController : IDeviceController
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(rt.DtSec));
         bool enforceSoft = _cfg.Waveform.GetEnforceSoftLimit();
         WaveformStopReason reason = WaveformStopReason.Completed;
+        // 逐周期位置校正：指令速度(未叠加校正的原值)按真实节拍梯形积分出参考位置，
+        // 与 Dpos 实测的差乘低增益 Kp 作校正速度叠加进指令（限幅）——等效给速度环外加
+        // 一个只追直流量（漂移）的低带宽位置环，把速度偏置造成的线性漂移压在单周期内。
+        // 只对时间驱动的连续波形（正弦/多正弦）开启；方波/脉冲按位置反馈自对齐不需要。
+        bool corrOn = rt.PosCorrEnabled && gen.ContinuousVelocity;
+        double corrKp = rt.PosCorrKpPerS, corrMax = Math.Max(1.0, rt.PosCorrMaxMmS);
+        double posRef = 0, prevRawV = 0, lastT = 0, corrApplied = 0, corrTime = 0, corrErr = 0;
+        bool corrInit = false;
+        LastWfDriftMmPerMin = LastWfDriftMm = LastWfCorrResidualMm = 0;
         try
         {
             // 软限位保护关闭：运行期临时放开控制器 FSLIMIT/RSLIMIT，
@@ -969,8 +1007,31 @@ public class ZMotionDeviceController : IDeviceController
 
                 double v = gen.NextVelocity(t, posMm);
 
-                _lastMoveDir = Math.Sign(v);      // 让 LimitMonitorLoopAsync 的方向拦截生效
-                DispatchSpeed(axis, mu, v);
+                double vDispatch = v;
+                if (corrOn)
+                {
+                    if (!corrInit)
+                    {
+                        posRef = posMm; prevRawV = v; lastT = t; corrInit = true;   // 以启动实位为参考锚点
+                    }
+                    else
+                    {
+                        double dtAct = t - lastT;
+                        if (dtAct > 0)
+                        {
+                            posRef += (prevRawV + v) / 2 * dtAct;
+                            corrErr = posRef - posMm;
+                            double vCorr = Math.Clamp(corrKp * corrErr, -corrMax, corrMax);
+                            vDispatch += vCorr;
+                            corrApplied += vCorr * dtAct;
+                            corrTime += dtAct;
+                        }
+                        prevRawV = v; lastT = t;
+                    }
+                }
+
+                _lastMoveDir = Math.Sign(v);      // 让 LimitMonitorLoopAsync 的方向拦截生效（用原指令判意图，不受校正项干扰）
+                DispatchSpeed(axis, mu, vDispatch);
 
                 WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, posMm));
 
@@ -980,6 +1041,14 @@ public class ZMotionDeviceController : IDeviceController
         catch (OperationCanceledException) { reason = WaveformStopReason.UserStopped; }
         finally
         {
+            if (corrOn && corrTime > 1.0)
+            {
+                // 稳态时校正项与漂移速度抵消：∫vCorr dt 即被抵消的漂移量，取反还原真实漂移；
+                // mm/s → mm/min 乘 60
+                LastWfDriftMm = -corrApplied;
+                LastWfDriftMmPerMin = -corrApplied / corrTime * 60.0;
+                LastWfCorrResidualMm = corrErr;
+            }
             TryApi(() => zmcaux.ZAux_Direct_Single_Cancel(_handle, axis, 2));
             _lastMoveDir = 0;
             _wfLastDir = 0;

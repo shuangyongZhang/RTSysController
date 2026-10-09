@@ -194,10 +194,32 @@ public sealed class WaveformConfig
     public CfgValue<double> AccelLimitMmS2 { get; set; } = new() { Value = 5000 };
 
     /// <summary>
+    /// 行程动态放大系数 K：快速换向（如 2Hz 正弦）激发出的机械/伺服动态超调使实测振幅大于指令振幅，
+    /// 加速度跟随模型原理上无法预测。校验时把预测行程包络以中心不变、半幅×K 展开，罩住实测；
+    /// 1=不放大，由自校准提示（实测振幅÷预测振幅）标定。与加速度上限无关，不随频率变化做精确建模。
+    /// </summary>
+    public CfgValue<double> StrokeAmpK { get; set; } = new() { Value = 1.0 };
+
+    /// <summary>
     /// 软限位保护开关：true=碰到软限位立即停止运动并提示；
     /// false=忽略软限位，波形坚持把整个运动做完（运行期临时放开软限位、跳过超行程校验，硬限位仍有效）。
     /// </summary>
     public CfgValue<bool> EnforceSoftLimit { get; set; } = new() { Value = true };
+
+    /// <summary>
+    /// 逐周期位置校正：正弦类速度模式是开环位置积分，驱动器/机构存在恒定的速度偏置时
+    /// 中心会随时间线性漂移（高速更明显）。开启后波形环以指令速度积分出参考位置，
+    /// 按与 Dpos 反馈的误差叠加一个低速校正项（等效给速度环外加低带宽位置环），
+    /// 把漂移压在一个周期内不跨周期累积。仅对连续波形（正弦/多正弦）生效，
+    /// 方波/脉冲本身按位置反馈自对齐。跑完后自校准会报告实测漂移速率。
+    /// </summary>
+    public CfgValue<bool> PosCorrEnabled { get; set; } = new() { Value = false };
+
+    /// <summary>校正环增益 Kp (1/s)：校正速度 = Kp×(参考位置−实际位置)。小=回拉温和不干扰动力学，大=收敛快。默认 0.2（≈5s 收敛）。</summary>
+    public CfgValue<double> PosCorrKpPerS { get; set; } = new() { Value = 0.2 };
+
+    /// <summary>校正速度上限 (mm/s)：限制校正项最大回拉速度，避免严重干扰波形形状。默认 10。</summary>
+    public CfgValue<double> PosCorrMaxMmS { get; set; } = new() { Value = 10 };
 
     // ---- 单正弦 ----
     public CfgValue<double> SineFreqHz { get; set; } = new() { Value = 0.5 };
@@ -250,7 +272,11 @@ public sealed class WaveformConfig
     public int GetMode() => Mode.Value;
     public double GetDtSec() => Math.Max(0.001, ControlPeriodMs.Value / 1000.0);
     public double GetAccelLimit() => AccelLimitMmS2.Value;
+    public double GetStrokeAmpK() => Math.Clamp(StrokeAmpK.Value, 1.0, 3.0);
     public bool GetEnforceSoftLimit() => EnforceSoftLimit.Value;
+    public bool GetPosCorrEnabled() => PosCorrEnabled.Value;
+    public double GetPosCorrKp() => Math.Clamp(PosCorrKpPerS.Value, 0.01, 2.0);
+    public double GetPosCorrMaxMmS() => Math.Clamp(PosCorrMaxMmS.Value, 1.0, 50.0);
 }
 
 public sealed class UiConfig

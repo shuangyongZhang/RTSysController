@@ -14,6 +14,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 独立仿真测试工程目录：不参与主工程编译（含其嵌套 obj 生成的 cs） -->
+    <Compile Remove="_wf_test/**/*.cs" />
     <None Update="config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

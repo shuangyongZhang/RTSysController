@@ -8,6 +8,8 @@ namespace MotorControlApp.Forms;
 /// 轨迹预览窗口：离线仿真逐拍序列双联图（上=速度 v(t)，下=积分位置 p(t)）。
 /// 纯 GDI 绘制：橙色速度阶梯 + 青色位置阶梯(带填充)，位置窗含零线、软限位虚线与网格。
 /// 数据来自 WaveformSampler（与启动校验同一积分回路），不依赖硬件连接。Esc 或关窗退出。
+/// 横轴固定时间比例尺（一屏 10s，PRTS 一屏 40 拍），不随运行时长压缩：
+/// 窗体底部拖拽条左右平移视图窗口；实时模式运行中自动跟随最新数据并锁定拖拽，结束后拖拽回看历史段。
 /// </summary>
 public sealed class WaveformPreviewForm : Form
 {
@@ -21,9 +23,18 @@ public sealed class WaveformPreviewForm : Form
 
     private const int MarginL = 64, MarginR = 16, MarginT = 46, MarginB = 30, PaneGap = 30;
     private const int TargetPoints = 4000;   // 抽稀目标点数（保 min/max 不丢台阶沿）
+    private const int ScrubH = 38;           // 底部拖拽条预留高度
+    private const double WindowSec = 10.0;   // 固定比例尺：非 PRTS 一屏 10s
+    private const int PrtsWindowBeats = 40;  // 固定比例尺：PRTS 一屏 40 拍
 
     private WaveformSeries _s;
     private readonly Font _smallFont;
+
+    // ---- 固定比例尺视图窗口 + 底部拖拽条 ----
+    private readonly TrackBar _scrub = null!;
+    private bool _follow = true;      // 跟随最新数据（视图钉在右缘）
+    private bool _liveRunning;        // 波形运行中：拖拽条禁用
+    private bool _syncScrub;          // 程序同步滑块值时抑制 ValueChanged 的“用户拖拽”判定
 
     // ---- 实时模式：订阅设备 WaveformTick，计时器抽帧刷新 ----
     private readonly IDeviceController? _liveDevice;
@@ -55,8 +66,8 @@ public sealed class WaveformPreviewForm : Form
         Text = device is null ? $"轨迹预览 - {series.ModeName}" : $"轨迹预览 - 实时（{series.ModeName}），等待波形拍数据…";
         Font = SystemFonts.MessageBoxFont;   // 含中文字形
         _smallFont = new Font(Font.FontFamily, 7.5f);
-        ClientSize = new Size(900, 560);
-        MinimumSize = new Size(520, 360);
+        ClientSize = new Size(900, 600);
+        MinimumSize = new Size(520, 400);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
         BackColor = Color.White;
@@ -65,21 +76,42 @@ public sealed class WaveformPreviewForm : Form
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
         UpdateStyles();
 
+        // 底部拖拽条：固定比例尺下左右平移视图；实时运行中锁定，结束后解禁回看
+        _scrub = new TrackBar
+        {
+            Dock = DockStyle.Bottom,
+            TickStyle = TickStyle.None,
+            AutoSize = false,
+            Height = 34,
+            Enabled = false,
+        };
+        _scrub.ValueChanged += (_, _) => { if (!_syncScrub) _follow = false; Invalidate(); };
+        Controls.Add(_scrub);
+
         if (_liveDevice is not null)
         {
+            _follow = true;   // 运行中跟随最新：视图钉在右缘
             _liveDevice.WaveformTick += OnLiveTick;
+            _liveDevice.WaveformStopped += OnLiveStopped;
             _liveTimer = new System.Windows.Forms.Timer { Interval = 100 };
             _liveTimer.Tick += (_, _) => RefreshLiveFrame();
             _liveTimer.Start();
+        }
+        else
+        {
+            // 静态预览：默认从 t=0 看起，超一屏用拖拽条回看/前看
+            _follow = false;
+            SyncScrub(series);
         }
     }
 
     /// <summary>后台控制线程回调：只加锁存点，不碰 UI。</summary>
     private void OnLiveTick(object? sender, WaveformTickEventArgs e)
     {
+        _liveRunning = true;
         lock (_liveLock)
         {
-            if (e.TimeSec < _liveLastT) { _lt.Clear(); _lv.Clear(); _lp.Clear(); }   // 新一次启动，t 回退 → 清空
+            if (e.TimeSec < _liveLastT) { _lt.Clear(); _lv.Clear(); _lp.Clear(); _follow = true; }   // 新一次启动，t 回退 → 清空并恢复跟随
             _lt.Add(e.TimeSec); _lv.Add(e.VelMmS); _lp.Add(e.PosMm);
             _liveLastT = e.TimeSec;
         }
@@ -100,7 +132,34 @@ public sealed class WaveformPreviewForm : Form
         }
         _s = snap;
         if (Text.EndsWith("…")) Text = $"轨迹预览 - 实时（{snap.ModeName}）";
+        SyncScrub(snap);
         Invalidate();
+    }
+
+    /// <summary>波形停止（后台线程）：解锁拖拽条供回看，视图保持钉在尾部不跳。</summary>
+    private void OnLiveStopped(object? sender, WaveformStopReason reason)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(() => { _liveRunning = false; SyncScrub(_s); Invalidate(); });
+    }
+
+    /// <summary>同步拖拽条范围/值/使能：跟随中钉右缘；运行中锁定；停止且超过一屏才允许拖拽。</summary>
+    private void SyncScrub(WaveformSeries s)
+    {
+        int wb = WindowBeats(s.DtSec, s.ModeName.Contains("PRTS"), s.TimeSec.Length);
+        int maxVal = Math.Max(0, s.TimeSec.Length - 1 - wb);
+        _syncScrub = true;
+        if (_scrub.Maximum != maxVal) _scrub.Maximum = maxVal;
+        if (_follow) _scrub.Value = maxVal;
+        _scrub.Enabled = !_liveRunning && maxVal > 0;
+        _syncScrub = false;
+    }
+
+    /// <summary>一屏拍数：非 PRTS 按固定 10s 折算（dt 换算拍数）；PRTS 固定 40 拍。</summary>
+    private static int WindowBeats(double dtSec, bool isPrts, int n)
+    {
+        double dt = Math.Max(1e-6, dtSec);
+        return isPrts ? PrtsWindowBeats : Math.Max(2, (int)Math.Round(WindowSec / dt));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -127,7 +186,7 @@ public sealed class WaveformPreviewForm : Form
             return;
         }
 
-        int availH = ClientSize.Height - MarginT - MarginB - PaneGap;
+        int availH = ClientSize.Height - MarginT - MarginB - PaneGap - ScrubH;
         int availW = ClientSize.Width - MarginL - MarginR;
         if (availW < 60 || availH < 60) return;
         var vRect = new Rectangle(MarginL, MarginT, availW, (int)(availH * 0.46));
@@ -149,13 +208,38 @@ public sealed class WaveformPreviewForm : Form
         double limSpan = Math.Max(pMax - pMin, 1e-9);
         bool limInView = showLimits && _s.Limits!.PosMm <= pMax + limSpan && _s.Limits.NegMm >= pMin - limSpan;
 
-        float Xv(double t) => vRect.X + (float)(t / tEnd) * vRect.Width;
+        // ---- 固定比例尺视图窗口：一屏 10s（PRTS 40 拍）；跟随中钉最新尾部，结束后拖拽条定历史段 ----
+        double dtSec = Math.Max(1e-6, _s.DtSec);
+        int winBeats = WindowBeats(dtSec, isPrts, nTicks);
+        double winSec = winBeats * dtSec;
+        double tStart = _follow ? Math.Max(0, tEnd - winSec) : _scrub.Value * dtSec;
+        double tStop = tStart + winSec;   // 窗口宽度恒定：数据不足一屏也不把比例尺撑满
+
+        // 窗口外数据不绘：只取窗口内点（首尾各多带一拍保证连线连续，绘制再裁剪到绘图框）
+        int i0 = 0; while (i0 < nTicks && _s.TimeSec[i0] < tStart) i0++;
+        i0 = Math.Max(0, i0 - 1);
+        int i1 = i0; while (i1 < nTicks && _s.TimeSec[i1] <= tStop) i1++;
+        i1 = Math.Min(nTicks, i1 + 1);
+        if (i1 - i0 < 2) i1 = Math.Min(nTicks, i0 + 2);
+        int wLen = i1 - i0;
+        var tW = new double[wLen]; var vW = new double[wLen]; var pW = new double[wLen];
+        Array.Copy(_s.TimeSec, i0, tW, 0, wLen);
+        Array.Copy(_s.VelMmS, i0, vW, 0, wLen);
+        Array.Copy(_s.PosMm, i0, pW, 0, wLen);
+
+        string winInfo = isPrts
+            ? $"窗口 {(int)(tStart / dtSec)}~{(int)(tStop / dtSec)}拍 / 共{nTicks}拍"
+            : $"窗口 {tStart:F1}~{tStop:F1}s / 共 {tEnd:F1}s";
+        g.DrawString(winInfo, _smallFont, Brushes.Gray,
+            new RectangleF(ClientSize.Width - 300, 10, 284, 16), new StringFormat { Alignment = StringAlignment.Far });
+
+        float Xv(double t) => vRect.X + (float)((t - tStart) / winSec) * vRect.Width;
         float Yv(double v) => vRect.Y + (float)((vMax - v) / (2 * vMax)) * vRect.Height;
         float Yp(double p) => pRect.Bottom - (float)((p - pMin) / (pMax - pMin)) * pRect.Height;
 
         DrawGridAndAxes(g, vRect, -vMax, vMax, Yv, "F0");
         DrawGridAndAxes(g, pRect, pMin, pMax, Yp, "F1");
-        DrawTimeTicks(g, vRect, pRect, nTicks, isPrts, _s.DtSec, tEnd);
+        DrawTimeTicks(g, vRect, pRect, tStart, tStop, isPrts, dtSec);
         
         // ---- 0 基准横轴（实线）：速度、位置两图都在值=0 处画一条醒目的实线作为分界 ----
         using (var zp = new Pen(Color.FromArgb(120, 120, 120), 1.3f))
@@ -166,13 +250,16 @@ public sealed class WaveformPreviewForm : Form
             g.DrawLine(zp, pRect.X, yp0, pRect.Right, yp0);
         }
         
+        // ---- 速度/位置序列（裁剪到绘图框内：跨窗口边界的点不外溢到边距）----
+        System.Drawing.Drawing2D.GraphicsState clipSt = g.Save();
+        g.SetClip(Rectangle.Union(vRect, pRect));
+
         // ---- 速度阶梯线 ----
-        var vPts = MapPoints(_s.TimeSec, _s.VelMmS, Xv, Yv);
+        var vPts = MapPoints(tW, vW, Xv, Yv);
         using (var pen = new Pen(VelColor, 2f)) g.DrawLines(pen, vPts);
-        g.DrawString(isPrts ? "速度 V(K)" : "速度 v(t)", _smallFont, new SolidBrush(VelColor), MarginL - 58, vRect.Y - 16);
 
         // ---- 位置填充（以 0 线为分界：正半轴向上填、负半轴向下填）+ 阶梯线 ----
-        var pPts = MapPoints(_s.TimeSec, _s.PosMm, Xv, Yp);
+        var pPts = MapPoints(tW, pW, Xv, Yp);
         float zeroY = Yp(Math.Clamp(0, pMin, pMax));
         using (var fb = new SolidBrush(PosFillColor))
         {
@@ -187,6 +274,9 @@ public sealed class WaveformPreviewForm : Form
             }
         }
         using (var pen = new Pen(PosColor, 2f)) g.DrawLines(pen, pPts);
+
+        g.Restore(clipSt);
+        g.DrawString(isPrts ? "速度 V(K)" : "速度 v(t)", _smallFont, new SolidBrush(VelColor), MarginL - 58, vRect.Y - 16);
         g.DrawString(isPrts ? "位置 p(K)" : "位置 p(t)", _smallFont, new SolidBrush(PosColor), MarginL - 58, pRect.Y - 16);
 
         // ---- 软限位虚线 ----
@@ -287,43 +377,35 @@ public sealed class WaveformPreviewForm : Form
         return a < 1e-9 ? fallback : "G4";   // 量程≈0（数据全零）时退回默认，避免无意义长串
     }
 
-    /// <summary>PRTS 模式横轴按节拍序号 K 标注；其他模式按时间 (s) 标注。
-    /// 拍数较少(≤40)时画逐拍淡网格（仅 PRTS）。</summary>
-    private void DrawTimeTicks(Graphics g, Rectangle vRect, Rectangle pRect, int nTicks, bool isPrts, double dtSec, double tEnd)
+    /// <summary>视图窗口内按“整齐”的时间/拍数步长画竖直网格与标签；PRTS 轴按整数拍标注。</summary>
+    private void DrawTimeTicks(Graphics g, Rectangle vRect, Rectangle pRect, double tStart, double tStop, bool isPrts, double dtSec)
     {
         using var grid = new Pen(GridColor);
         using var txt = new SolidBrush(Color.Gray);
         var center = new StringFormat { Alignment = StringAlignment.Center };
-        int lastK = Math.Max(1, nTicks - 1);
-        float Xk(int k) => vRect.X + (float)k / lastK * vRect.Width;
-    
-        if (isPrts && nTicks <= 40)
+        double span = tStop - tStart;
+        if (span <= 1e-9) return;
+        float Xt(double t) => vRect.X + (float)((t - tStart) / span) * vRect.Width;
+
+        double step;
+        if (isPrts)
+            step = Math.Max(1, Math.Ceiling(span / dtSec / 5)) * dtSec;   // 整数拍步长
+        else
         {
-            using var minor = new Pen(Color.FromArgb(238, 238, 238));
-            for (int k = 0; k <= lastK; k++)
+            double raw = span / 5;
+            step = raw switch
             {
-                float x = Xk(k);
-                g.DrawLine(minor, x, vRect.Y, x, vRect.Bottom);
-                g.DrawLine(minor, x, pRect.Y, x, pRect.Bottom);
-            }
+                <= 0.2 => 0.2, <= 0.5 => 0.5, <= 1 => 1, <= 2 => 2, <= 5 => 5,
+                <= 10 => 10, <= 15 => 15, <= 30 => 30, <= 60 => 60, _ => 120,
+            };
         }
-    
-        int step = Math.Max(1, (int)Math.Round(lastK / 5.0));
-        for (int k = 0; k <= lastK; k += step)
+        for (double tv = Math.Ceiling(tStart / step) * step; tv <= tStop + 1e-9; tv += step)
         {
-            float x = Xk(k);
+            float x = Xt(tv);
             g.DrawLine(grid, x, vRect.Y, x, vRect.Bottom);
             g.DrawLine(grid, x, pRect.Y, x, pRect.Bottom);
-            string label = isPrts ? k.ToString(Inv) : (k * dtSec).ToString("F1", Inv);
+            string label = isPrts ? Math.Round(tv / dtSec).ToString("F0", Inv) : tv.ToString("F1", Inv);
             g.DrawString(label, _smallFont, txt, x, pRect.Bottom + 4, center);
-        }
-        if (lastK % step != 0)
-        {
-            float x = Xk(lastK);
-            g.DrawLine(grid, x, vRect.Y, x, vRect.Bottom);
-            g.DrawLine(grid, x, pRect.Y, x, pRect.Bottom);
-            string label = isPrts ? lastK.ToString(Inv) : tEnd.ToString("F1", Inv);
-            g.DrawString(label, _smallFont, txt, x - 2, pRect.Bottom + 4, center);
         }
     }
 
@@ -344,7 +426,11 @@ public sealed class WaveformPreviewForm : Form
         {
             _liveTimer?.Stop();
             _liveTimer?.Dispose();
-            if (_liveDevice is not null) _liveDevice.WaveformTick -= OnLiveTick;
+            if (_liveDevice is not null)
+            {
+                _liveDevice.WaveformTick -= OnLiveTick;
+                _liveDevice.WaveformStopped -= OnLiveStopped;
+            }
             _smallFont.Dispose();
         }
         base.Dispose(disposing);

@@ -14,8 +14,9 @@ public enum WaveformMode
     Prts = 4,
 }
 
-/// <summary>工厂产出的运行时包：生成器 + 限位 + 控制周期。</summary>
-public sealed record WaveformRuntime(IWaveformGenerator Generator, MotionLimits Limits, double DtSec);
+/// <summary>工厂产出的运行时包：生成器 + 限位 + 控制周期 + 逐周期位置校正参数（仅连续波形生效）。</summary>
+public sealed record WaveformRuntime(IWaveformGenerator Generator, MotionLimits Limits, double DtSec,
+    bool PosCorrEnabled = false, double PosCorrKpPerS = 0.2, double PosCorrMaxMmS = 10);
 
 /// <summary>
 /// 从 WaveformConfig 构造对应的波形生成器与运行限制。集中在此，UI/设备层只管调用。
@@ -51,7 +52,7 @@ public static class WaveformFactory
             _ => throw new InvalidOperationException($"未知波形模式 {mode}"),
         };
 
-        return new WaveformRuntime(gen, lim, dt);
+        return new WaveformRuntime(gen, lim, dt, w.GetPosCorrEnabled(), w.GetPosCorrKp(), w.GetPosCorrMaxMmS());
     }
 
     private static IWaveformGenerator BuildMultiSine(WaveformConfig w)
@@ -101,6 +102,7 @@ public static class WaveformFactory
         {
             EnforceSoftLimit = w.GetEnforceSoftLimit(),
             DecelLimitMmS2 = decel,
+            DynAmpK = w.GetStrokeAmpK(),
         };
     }
 
@@ -184,6 +186,35 @@ public static class WaveformFactory
             sb.Append(c.FreqHz.ToString("0.####", Inv)).Append(',')
               .Append((c.AmpMmS * s).ToString("0.####", Inv)).Append(',')
               .Append((c.PhaseRad * 180.0 / Math.PI).ToString("0.####", Inv));
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>把方波途经点表 "P,v,t;..." 中的位置 P 与速度 v 按 s 等比缩放（停顿 t 不变），供“一键缩放至安全”使用。</summary>
+    public static string ScaleWaypointTable(string table, double s)
+    {
+        var wps = ParseWaypoints(table);
+        var sb = new StringBuilder();
+        foreach (var w in wps)
+        {
+            if (sb.Length > 0) sb.Append(';');
+            sb.Append((w.PosMm * s).ToString("0.####", Inv)).Append(',')
+              .Append((w.SpeedMmS * s).ToString("0.####", Inv)).Append(',')
+              .Append(w.DwellSec.ToString("0.####", Inv));
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>把 PRTS 显式逐拍表中的数值速度按 s 缩放；+/0/- 符号拍随速度幅值走，原样保留。</summary>
+    public static string ScalePrtsTable(string table, double s)
+    {
+        var sb = new StringBuilder();
+        foreach (string tok in (table ?? string.Empty).Split(
+            new[] { ',', ' ', ';', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (sb.Length > 0) sb.Append(',');
+            if ((tok is "+" or "p" or "P" or "-" or "m" or "M" or "0") || !TryD(tok, out double v)) sb.Append(tok);
+            else sb.Append((v * s).ToString("0.####", Inv));
         }
         return sb.ToString();
     }
