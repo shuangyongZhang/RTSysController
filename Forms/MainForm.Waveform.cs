@@ -43,7 +43,7 @@ public partial class MainForm
     // 波形运行期实测位置包络（来自逐拍反馈），完成后与预测包络对比，提示真机有效加速度校准值
     private double _wfActMin, _wfActMax;
     private bool _wfActAccum;
-    
+
     // 单正弦 f/S/An/amax 四量耦合联动：记录用户最近直接编辑的字段（作为反推基准），
     // 并在程序性回填派生量时抑制 TextChanged，避免重入与把回填误判为用户编辑。
     private string _sineEditKey = "S";
@@ -89,14 +89,14 @@ public partial class MainForm
         group.Controls.Add(new Label { Text = "ms", Location = new Point(126, 24), Size = new Size(25, 22), ForeColor = Color.DimGray });
 
         const string tipAccel = "校验用的峰值加速度限制（mm/s²），0=不校验；运行期控制器的 Accel/Decel 也按此值钳制。仅对连续速度波形（正弦类）判限；方波/脉冲/PRTS 等阶梯型由控制器加减速钳制，不据此报超限。";
-        var lblAccel = new Label { Text = "加速度上限：", Location = new Point(150, 24), Size = new Size(80, 22), TextAlign = ContentAlignment.MiddleRight };
+        var lblAccel = new Label { Text = "加速度上限：", Location = new Point(170, 24), Size = new Size(80, 22), TextAlign = ContentAlignment.MiddleRight };
         _tip.SetToolTip(lblAccel, tipAccel);
         group.Controls.Add(lblAccel);
         _txtWfAccel = new TextBox { Location = new Point(232, 22), Size = new Size(60, 24), Text = _config.Waveform.AccelLimitMmS2.Value.ToString("0.#", Inv), TextAlign = HorizontalAlignment.Right };
         _txtWfAccel.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtWfAccel, tipAccel);
         group.Controls.Add(_txtWfAccel);
-        var lblAccelUnit = new Label { Text = "mm/s²(0=不校验)", Location = new Point(294, 24), Size = new Size(100, 22), ForeColor = Color.DimGray };
+        var lblAccelUnit = new Label { Text = "mm/s²", Location = new Point(294, 24), Size = new Size(50, 22), ForeColor = Color.DimGray };
         _tip.SetToolTip(lblAccelUnit, tipAccel);
         group.Controls.Add(lblAccelUnit);
 
@@ -104,8 +104,8 @@ public partial class MainForm
         _chkEnforceSoft = new CheckBox
         {
             Text = "软限位保护",
-            Location = new Point(392, 23),
-            Size = new Size(84, 24),
+            Location = new Point(362, 23),
+            Size = new Size(95, 24),
             Checked = _config.Waveform.EnforceSoftLimit.Value,
             AutoCheck = false,
             ForeColor = Color.SeaGreen
@@ -173,21 +173,21 @@ public partial class MainForm
         // 行程动态放大系数 K：2Hz 级快速换向真机存在机械/伺服动态超调（实测振幅>指令振幅），
         // 跟随模型原理上预测不了；校验时包络中心不变、半幅×K 展开，K 由跑完后的自校准提示标定。
         const string tipAmpK = "行程动态放大系数 K：校验时把预测行程中心不变、半幅×K 展开，罩住快速换向激发出的机械/伺服动态超调（实测振幅大于预测振幅那部分）。1=不放大；跑完波形后按自校准提示的建议值填入一次即可。与加速度上限无关。";
-        var lblAmpK = new Label { Text = "放大K：", Location = new Point(314, 318), Size = new Size(52, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        var lblAmpK = new Label { Text = "放大K：", Location = new Point(310, 318), Size = new Size(52, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblAmpK, tipAmpK);
         group.Controls.Add(lblAmpK);
-        _txtWfAmpK = new TextBox { Location = new Point(368, 316), Size = new Size(44, 24), Text = _config.Waveform.StrokeAmpK.Value.ToString("0.00", Inv), TextAlign = HorizontalAlignment.Right };
+        _txtWfAmpK = new TextBox { Location = new Point(352, 316), Size = new Size(44, 24), Text = _config.Waveform.StrokeAmpK.Value.ToString("0.00", Inv), TextAlign = HorizontalAlignment.Right };
         _txtWfAmpK.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtWfAmpK, tipAmpK);
         group.Controls.Add(_txtWfAmpK);
-        group.Controls.Add(new Label { Text = "(1=不放大)", Location = new Point(414, 318), Size = new Size(60, 22), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "(1=不放大)", Location = new Point(400, 318), Size = new Size(70, 22), ForeColor = Color.DimGray });
 
         // 逐周期位置校正：压住速度模式高速运行时的线性漂移（速度直流偏置），跑完后回报实测漂移速率
         const string tipPosCorr = "逐周期位置校正：把指令速度积分成参考位置，按与实测位置(Dpos)的差叠加一个低速校正项（限幅），等效给速度环外挂低带宽位置环，把速度直流偏置造成的“越跑越偏”线性漂移压在单周期内、不跨周期累积。仅对单正弦/多正弦生效；跑完波形后提示实测漂移速率与累计抵消量，据此判断抑制效果。\n增益Kp(1/s)：校正速度=Kp×参考与实际之差，小=回拉温和不干扰波形，大=收敛快；上限：校正项最大速度(mm/s)，避免严重干扰波形形状。";
         _chkPosCorr = new CheckBox
         {
             Text = "逐周期校正",
-            Location = new Point(10, 344),
+            Location = new Point(10, 346),
             Size = new Size(96, 24),
             Checked = _config.Waveform.PosCorrEnabled.Value,
             AutoCheck = false,
@@ -202,19 +202,19 @@ public partial class MainForm
         _tip.SetToolTip(_chkPosCorr, tipPosCorr);
         group.Controls.Add(_chkPosCorr);
 
-        var lblCorrKp = new Label { Text = "增益Kp：", Location = new Point(108, 346), Size = new Size(56, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        var lblCorrKp = new Label { Text = "增益Kp:", Location = new Point(100, 346), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblCorrKp, tipPosCorr);
         group.Controls.Add(lblCorrKp);
-        _txtPosCorrKp = new TextBox { Location = new Point(166, 344), Size = new Size(44, 24), Text = _config.Waveform.PosCorrKpPerS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
+        _txtPosCorrKp = new TextBox { Location = new Point(160, 346), Size = new Size(44, 22), Text = _config.Waveform.PosCorrKpPerS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
         _txtPosCorrKp.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtPosCorrKp, tipPosCorr);
         group.Controls.Add(_txtPosCorrKp);
-        group.Controls.Add(new Label { Text = "1/s", Location = new Point(212, 346), Size = new Size(24, 22), ForeColor = Color.DimGray });
+        group.Controls.Add(new Label { Text = "1/s", Location = new Point(210, 346), Size = new Size(26, 22), ForeColor = Color.DimGray });
 
-        var lblCorrMax = new Label { Text = "上限：", Location = new Point(240, 346), Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        var lblCorrMax = new Label { Text = "上限:", Location = new Point(238, 346), Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblCorrMax, tipPosCorr);
         group.Controls.Add(lblCorrMax);
-        _txtPosCorrMax = new TextBox { Location = new Point(286, 344), Size = new Size(44, 24), Text = _config.Waveform.PosCorrMaxMmS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
+        _txtPosCorrMax = new TextBox { Location = new Point(286, 346), Size = new Size(44, 22), Text = _config.Waveform.PosCorrMaxMmS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
         _txtPosCorrMax.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtPosCorrMax, tipPosCorr);
         group.Controls.Add(_txtPosCorrMax);
