@@ -28,6 +28,8 @@ public sealed class MotionUnits
         _units = z.Units.Value;
         _lead = z.Lead.Value;
         _gearDen = z.GearDenominator.Value;
+        if (_units == 0 || _lead == 0 || _gearDen == 0)
+            throw new InvalidOperationException("Units/Lead/GearDenominator 不能为 0（请检查 config.json）");
     }
 
     /// <summary>mm（UI 物理量）→ 控制卡 user units（位置）。</summary>

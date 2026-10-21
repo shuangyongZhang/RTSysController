@@ -39,6 +39,9 @@ public partial class MainForm
     private readonly Dictionary<string, TextBox>[] _modeInputs = new Dictionary<string, TextBox>[5];
     private WaveformSimResult? _wfLastResult;
     private bool _wfSubscribed;
+    // 轨迹预览/实时曲线各只保留一个窗口：再点按钮先关旧窗再开新窗，避免叠加一堆历史窗口
+    private WaveformPreviewForm? _wfPreviewWin;
+    private WaveformPreviewForm? _wfLiveWin;
     private WaveformMode _wfRunMode;   // 启动时捕获的模式：结束后决定是否回 0（脉冲豁免）
     // 波形运行期实测位置包络（来自逐拍反馈），完成后与预测包络对比，提示真机有效加速度校准值
     private double _wfActMin, _wfActMax;
@@ -55,9 +58,8 @@ public partial class MainForm
 
     private static readonly string[] ModeNames = { "单正弦", "多正弦叠加", "方波", "脉冲", "伪随机PRTS" };
 
-    // 暂时只开放单正弦/多正弦：方波/脉冲/PRTS 已从页签屏蔽（恢复时往数组加回对应枚举即可，
-    // config 里旧的模式值 2~4 会被自动映射回第 0 页，不会越界）
-    private static readonly WaveformMode[] VisibleModes = { WaveformMode.Sine, WaveformMode.MultiSine };
+    // 五种运动模式全部开放：单正弦/多正弦叠加/方波/脉冲/伪随机PRTS
+    private static readonly WaveformMode[] VisibleModes = { WaveformMode.Sine, WaveformMode.MultiSine, WaveformMode.Square, WaveformMode.Pulse, WaveformMode.Prts };
 
     private WaveformMode ActiveMode() => VisibleModes[Math.Clamp(_tabs.SelectedIndex, 0, VisibleModes.Length - 1)];
 
@@ -88,7 +90,7 @@ public partial class MainForm
         group.Controls.Add(_txtWfDt);
         group.Controls.Add(new Label { Text = "ms", Location = new Point(126, 24), Size = new Size(25, 22), ForeColor = Color.DimGray });
 
-        const string tipAccel = "校验用的峰值加速度限制（mm/s²），0=不校验；运行期控制器的 Accel/Decel 也按此值钳制。仅对连续速度波形（正弦类）判限；方波/脉冲/PRTS 等阶梯型由控制器加减速钳制，不据此报超限。";
+        const string tipAccel = "校验用的峰值加速度限制（mm/s²），0=不校验；运行期控制器的 Accel/Decel 也按此值钳制。正弦类连续波形据此判加速度；方波/脉冲等阶梯型的实际加减速由控制器钳制，不据此报超限。PRTS 页签的“减速度”与本值强制同步（改任一处另一处跟随），规则生成按 0.9×本值规划斜坡。";
         var lblAccel = new Label { Text = "加速度上限：", Location = new Point(170, 24), Size = new Size(80, 22), TextAlign = ContentAlignment.MiddleRight };
         _tip.SetToolTip(lblAccel, tipAccel);
         group.Controls.Add(lblAccel);
@@ -100,7 +102,7 @@ public partial class MainForm
         _tip.SetToolTip(lblAccelUnit, tipAccel);
         group.Controls.Add(lblAccelUnit);
 
-        // 软限位保护开关：勾选=碰限位停；取消=坚持把运动做完
+        // 软限位保护开关：勾选=运行中碰限位停；取消=运行中坚持把轨迹做完（启动前超行程一律拦）
         _chkEnforceSoft = new CheckBox
         {
             Text = "软限位保护",
@@ -117,7 +119,7 @@ public partial class MainForm
             _chkEnforceSoft.ForeColor = _chkEnforceSoft.Checked ? Color.SeaGreen : Color.Firebrick;
             ValidateNow();
         };
-        _tip.SetToolTip(_chkEnforceSoft, "开启：运动碰到软限位立即停止并提示触碰限位。\n关闭：忽略软限位，五种波形运动坚持把整个轨迹做完（启动前不再拦超行程，运行中限位处不停；硬限位保护仍然有效，请确认机械行程安全）。");
+        _tip.SetToolTip(_chkEnforceSoft, "开启：运动碰到软限位立即停止并提示触碰限位；启动前按限位窗预留 5% 余量判限。\n关闭：运行中限位处不停，五种波形运动坚持把整个轨迹做完；启动前仍拦超行程（按原始限位窗判，不留余量）。硬限位保护始终有效，请确认机械行程安全。");
         group.Controls.Add(_chkEnforceSoft);
 
         // ---- 模式分页 ----
@@ -222,11 +224,24 @@ public partial class MainForm
         _tip.SetToolTip(lblCorrUnit, tipPosCorr);
         group.Controls.Add(lblCorrUnit);
 
-        _lblWfStatus = new Label { Location = new Point(10, 372), Size = new Size(460, 52), ForeColor = Color.DimGray, Text = "提示：改参数即自动时域校验，超限禁止启动；悬停参数可查看说明；关闭“软限位保护”后超行程不再拦，坚持把运动做完。" };
+        _lblWfStatus = new Label { Location = new Point(10, 372), Size = new Size(460, 52), ForeColor = Color.DimGray, Text = "提示：改参数即自动时域校验，任何限制不通过（限速/限加速度/限行程）都禁止启动；悬停参数可查看说明；“软限位保护”仅决定运行中碰限位是否停止。" };
         group.Controls.Add(_lblWfStatus);
+
+        // PRTS 生成按 min(加速度上限, PRTS 减速度) 规划斜坡，两值不同只会让较小的那个生效、
+        // 另一个看着“改了没反应”，故界面上强制同步：改任一处另一处跟随（打开时以加速度上限为基准）。
+        var prtsDecelBox = _modeInputs[(int)WaveformMode.Prts]["decel"];
+        _txtWfAccel.TextChanged += (_, _) => MirrorText(_txtWfAccel, prtsDecelBox);
+        prtsDecelBox.TextChanged += (_, _) => MirrorText(prtsDecelBox, _txtWfAccel);
+        prtsDecelBox.Text = _txtWfAccel.Text;
 
         Controls.Add(group);
         ValidateNow();
+    }
+
+    /// <summary>两输入框文本强制一致：只在内容不同时写入，目标框的回写自然成为空操作（无递归）。</summary>
+    private static void MirrorText(TextBox source, TextBox target)
+    {
+        if (target.Text != source.Text) target.Text = source.Text;
     }
 
     /// <summary>构建一个模式页：普通字段两列排布，宽文本字段整行置于下方；标签/输入框悬停显示参数说明。</summary>
@@ -287,7 +302,7 @@ public partial class MainForm
             case WaveformMode.Sine:
                 double omega0 = 2 * Math.PI * w.SineFreqHz.Value;
                 yield return ("频率 f (Hz)", "f", N(w.SineFreqHz.Value), false, "正弦速度频率 f：与行程幅值 S 共同决定峰值速度/加速度（An=2πf·S，amax=(2πf)²·S），四个量相互约束，改任一个其他会跟着变。受控制周期限制：f·dt 建议 ≤0.05（如 dt=10ms 时 f 建议 ≤5Hz）。");
-                yield return ("行程幅值 S (mm)", "S", N(w.SineStrokeMm.Value), false, "单边幅值 S：位置在“S·cosψ−S”到“S·cosψ+S”之间摆动（ψ=±90° 时才是关于 0 对称的 [−S,+S]，ψ=0° 时实际是 [0,2S]），峰峰值=2S。S 需 ≤ 软限位窗口宽度，否则超行程（关闭软限位保护后不再拦，但会冲出限位窗，注意机械行程安全）。");
+                yield return ("行程幅值 S (mm)", "S", N(w.SineStrokeMm.Value), false, "单边幅值 S：位置在“S·cosψ−S”到“S·cosψ+S”之间摆动（ψ=±90° 时才是关于 0 对称的 [−S,+S]，ψ=0° 时实际是 [0,2S]），峰峰值=2S。S 需 ≤ 软限位窗口宽度，否则超行程禁止启动（与软限位保护开关无关；关闭开关仅意味着运行中限位处不停，更需自行保证机械行程安全）。");
                 yield return ("峰值速度 An (mm/s)", "An", N(omega0 * w.SineStrokeMm.Value), false, "速度正弦峰值 An=2πf·S，对应需求文档中的“正弦转速幅值”。可直接修改此框，系统会反推行程幅值 S（保持 f 不变）。");
                 yield return ("峰值加速度 amax (mm/s²)", "amax", N(omega0 * omega0 * w.SineStrokeMm.Value), false, "加速度峰值 amax=(2πf)²·S。可直接修改此框，系统会反推行程幅值 S（保持 f 不变），并与“加速度上限”校验项配合判限。");
                 yield return ("速度偏置 n0 (mm/s)", "n0", N(w.SineBiasMmS.Value), false, "叠加在正弦上的恒速偏置 n0：>0 整体向正方向漂移，轨迹不再对称于 0 点，容易单侧冲出软限位；一般保持 0。");
@@ -307,24 +322,24 @@ public partial class MainForm
                 break;
             case WaveformMode.Square:
                 yield return ("循环次数 n", "n", w.SqCycles.Value.ToString(Inv), false, "整条途经点表循环执行 n 遍；每遍依次到达每个途经点并停顿。最后一遍结束后停在最后一个途经点。");
-                yield return ("减速度 (mm/s²)", "decel", N(w.SqDecelMmS2.Value), false, "方波运行期控制器的减速度上限（mm/s²）：到点/方向切换/停止时按此值减速。阶梯型波形的实际加减速由控制器钳制，此值不参与时域波形判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.SqDecelMmS2.Value), false, "方波运行期控制器的减速度上限（mm/s²）：到点/方向切换/停止时按此值减速。校验器按该值预测减速/换向超程，调低会增大预测行程（可能变为超限）；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
                 yield return ("途经点 P,v,t;... (mm,mm/s,t=到点停顿s)", "wps", w.SqWaypoints.Value, true, "途经点序列“P,v,t”分号分隔：目标位置 P(mm，相对启动时原地置零后的 0 点)、逼近速度 v(mm/s)、到点后停顿 t(s)。位置反馈判到达，途经点 P 必须落在软限位窗内（关闭软限位保护后限位处不停，注意机械行程）。");
                 break;
             case WaveformMode.Pulse:
                 yield return ("脉冲速度 v1 (mm/s)", "v1", N(w.PuSpeedMmS.Value), false, "脉冲速度 v1：每个脉冲前半 +v1 冲出、后半 −v1 回基位，净位移 0。单个脉冲最大偏离 = v1×ti/2。");
                 yield return ("循环次数 n", "n", w.PuCycles.Value.ToString(Inv), false, "整个脉冲序列（含所有宽度和间隔）循环执行 n 遍。");
                 yield return ("脉冲间隔 gap (s)", "gap", N(w.PuGapS.Value), false, "相邻脉冲间的零速间隔 gap（秒），0=脉冲背靠背连续执行。");
-                yield return ("减速度 (mm/s²)", "decel", N(w.PuDecelMmS2.Value), false, "脉冲运行期控制器的减速度上限（mm/s²）：每脉冲回基位/换向时按此值减速。阶梯型波形由控制器钳制，此值不参与时域判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.PuDecelMmS2.Value), false, "脉冲运行期控制器的减速度上限（mm/s²）：每脉冲回基位/换向时按此值减速。校验器按该值预测减速/换向超程，调低会增大预测行程（可能变为超限）；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
                 yield return ("脉冲宽度 t1,t2,t3,t4 (s)", "durs", w.PuDurations.Value, true, "脉冲宽度序列“t1,t2,...”逗号分隔（秒）：每个 ti 拆成前半加速、后半回基位，按顺序执行并整体循环 n 次。");
                 break;
             case WaveformMode.Prts:
-                yield return ("速度幅值 V (mm/s)", "V", N(w.PrtsV.Value), false, "三态速度幅值 V：速度在 +V / 0 / −V 三个状态间伪随机切换（每态连续保持 K 拍）。");
-                yield return ("每态保持 K 拍", "K", w.PrtsK.Value.ToString(Inv), false, "每个速度状态连续保持 K 个控制拍（K×dt 秒）后才允许切换，越大运动越平缓。");
-                yield return ("位置波动 S (mm)", "S", N(w.PrtsS.Value), false, "位置波动约束 ±S（mm）：序列生成时前瞻约束保证位置始终在 [−S, +S] 内且周期末归零。S 需 ≤ 软限位窗半宽（关闭软限位保护后不再拦）。");
-                yield return ("总时长 T (s)", "T", N(w.PrtsDurationS.Value), false, "总运行时长 T（秒）：到时后自动追加回零段使末端位置≈ 0。");
+                yield return ("速度幅值 V (mm/s)", "V", N(w.PrtsV.Value), false, "三态速度幅值 V：速度目标在 +V / 0 / −V 三个状态间伪随机切换（每态保持 K 拍）。实际速度按 0.9×加速度上限（与下方减速度强制同步）逐拍斜坡过渡，不再阶跃换向。");
+                yield return ("每态保持 K 拍", "K", w.PrtsK.Value.ToString(Inv), false, "每个速度状态连续保持 K 个控制拍（K×dt 秒）后才允许切换。换向按斜坡完成，从 +V 反转到 −V 约需 2V/(0.9×加速度上限×dt) 拍；K 小于该值时状态内到不了反向全速，更无法在 ±V 驻留。校验通过后状态栏会给出当前参数下的提示。");
+                yield return ("位置波动 S (mm)", "S", N(w.PrtsS.Value), false, "位置波动约束 ±S（mm）：生成时按 0.9S 做内部规划边界（给一拍指令延迟、死区和换向残差留余量），并用刹车距离提前回拉，保证实际位置仍在 [−S, +S] 内且周期末归零。S 需 ≤ 软限位窗半宽，超行程时无论软限位保护开关是否关闭都禁止启动。");
+                yield return ("总时长 T (s)", "T", N(w.PrtsDurationS.Value), false, "总运行时长 T（秒）：到时后先按同一斜坡停稳，再低速回零，因此实际总时长会略大于 T。");
                 yield return ("随机种子", "seed", w.PrtsSeed.Value.ToString(Inv), false, "固定种子离线生成整条速度序列：相同参数+种子每次轨迹完全一致（可复现）。");
-                yield return ("减速度 (mm/s²)", "decel", N(w.PrtsDecelMmS2.Value), false, "PRTS 运行期控制器的减速度上限（mm/s²）：速度态切换/回零时按此值减速。阶梯型波形由控制器钳制，此值不参与时域判限；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
-                yield return ("显式逐拍速度序列 +/0/- 或mm/s(留空=按规则生成)", "table", w.PrtsTable.Value, true, "逐拍指定速度：每个 token 一拍，用逗号/空格/分号分隔；token 写 + / - / 0 代表±V与零速（V 取上方“速度幅值”），也可直接写 mm/s 数值（如 +100,-100,0）。非空则覆盖 K/S/T/种子等规则参数，逐拍原样下发（不前瞻、不回零）；位置=序列积分，超行程由校验器判限，如需末尾回零请自行在尾部补反向拍。清空回到规则生成。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.PrtsDecelMmS2.Value), false, "PRTS 生成与运行期共用的减速度上限（mm/s²）：与顶部“加速度上限”强制同步，改任一处另一处跟随。速度态切换/回零按 0.9×本值规划斜坡；0=回退默认 5000（加速度上限同时为 0 时不再校验峰值加速度）。仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("显式逐拍速度序列 +/0/- 或mm/s(留空=按规则生成)", "table", w.PrtsTable.Value, true, "逐拍指定速度：每个 token 代表一个控制周期的速度采样（周期取当前“控制周期”设置），用逗号/空格/分号分隔；token 写 + / - / 0 代表±V与零速（V 取上方“速度幅值”），也可直接写 mm/s 数值（如 +100,-100,0）。非空则覆盖 K/S/T/种子等规则参数，按时间轴回放（不做斜坡、前瞻、不回零）；位置=序列积分，超行程由校验器判限，如需末尾回零请自行在尾部补反向拍。清空回到规则生成。");
                 break;
         }
     }
@@ -352,27 +367,29 @@ public partial class MainForm
 
             _lblWfPeakV.Text = $"峰值速度：{result.PeakVelocityMmS:F0} mm/s (限 {MotionUnits.VmaxMmS:F0})";
             _lblWfStroke.Text = $"行程：[{result.MinPosMm:F1}, {result.MaxPosMm:F1}] mm";
-            _lblWfPeakA.Text = rt.Generator.ContinuousVelocity
+            _lblWfPeakA.Text = rt.Generator.AccelCheckMeaningful
                 ? $"峰值加速度：{result.PeakAccelMmS2:F0} mm/s2"
-                : $"速度阶跃率：{result.PeakAccelMmS2:F0} mm/s2（阶梯型仅参考，实际由控制器加减速钳制，不判限）";
+                : $"速度阶跃率：{result.PeakAccelMmS2:F0} mm/s2（含阶跃沿/阶梯型，仅参考，实际由控制器加减速钳制，不判限）";
 
             if (result.Ok)
             {
-                // 软限位保护关闭且轨迹冲出限位窗：不拦启动，但必须醒目提醒机械行程风险
-                MotionLimits lm = rt.Limits;
-                bool overStroke = !_config.Waveform.GetEnforceSoftLimit() &&
-                    (result.MaxPosMm > lm.PosMm + 1e-6 || result.MinPosMm < lm.NegMm - 1e-6);
-                if (overStroke)
+                // 超行程已纳入判限（与软限位保护开关无关），校验通过即行程在限位窗内，直接放行
+                string kvHint = "";
+                if (rt.Generator is PrtsGenerator pg && !HasExplicitTable())
                 {
-                    _lblWfStatus.Text = $"可启动（预估 {result.SimulatedSeconds:F1}s）。注意：软限位保护已关闭，行程 [{result.MinPosMm:F1}, {result.MaxPosMm:F1}] 冲出限位窗 [{lm.NegMm:F1}, {lm.PosMm:F1}]，运动将坚持把波形做完，请确认硬限位/机械行程安全！";
-                    _lblWfStatus.ForeColor = Color.DarkOrange;
+                    int k = Math.Max(1, _config.Waveform.PrtsK.Value);
+                    int rev = pg.FullReversalTicks;
+                    if (k < rev)
+                    {
+                        double vSafe = k * pg.PlanningAccelMmS2 * rt.DtSec / 2.0;
+                        kvHint = $"；提示：K={k} 小于 +V→−V 完整反向所需 {rev} 拍，单个状态内完不成反向过渡，大部分时间都在加减速（建议 K≥{rev}，要稳定驻留建议 K≈{2L * rev}；或 V≤{vSafe:F0} mm/s，不阻止启动）";
+                    }
                 }
-                else
-                {
-                    _lblWfStatus.Text = $"校验通过，可启动（预估时长 {result.SimulatedSeconds:F1}s）";
-                    _lblWfStatus.ForeColor = Color.SeaGreen;
-                }
-                _btnWfStart.Enabled = _device is { IsConnected: true } && !_device.IsWaveformRunning;
+                _lblWfStatus.Text = $"校验通过，可启动（预估时长 {result.SimulatedSeconds:F1}s）{kvHint}";
+                _lblWfStatus.ForeColor = Color.SeaGreen;
+                bool motionBusy = _device?.IsHoming == true ||
+                                  (_device is ZMotionDeviceController zm && zm.IsZeroing);
+                _btnWfStart.Enabled = _device is { IsConnected: true } && !_device.IsWaveformRunning && !motionBusy;
                 _btnWfScale.Enabled = false;
             }
             else
@@ -380,7 +397,16 @@ public partial class MainForm
                 _lblWfStatus.Text = "超限：" + string.Join("；", result.Violations);
                 _lblWfStatus.ForeColor = Color.Firebrick;
                 _btnWfStart.Enabled = false;
-                _btnWfScale.Enabled = result.SuggestedScale > 0 && result.SuggestedScale < 1;
+                // 显式表非空时不供一键缩放：表内幅值是用户有意指定的测试谱，
+                // 整体缩放会把指定值改掉了，需超限时请手动等比缩放表内幅值（状态栏给出建议系数）。
+                // 一旦开始填写即置灰，清空后按钮状态重新由面板数据校验决定（表框 TextChanged 已触发本方法）
+                _btnWfScale.Enabled = !HasExplicitTable() && result.SuggestedScale > 0 && result.SuggestedScale < 1;
+                if (HasExplicitTable())
+                {
+                    string sug = result.SuggestedScale > 0 && result.SuggestedScale < 1
+                        ? $"，建议表内幅值统一乘 {result.SuggestedScale:F3}" : "";
+                    _lblWfStatus.Text += $"；显式分量表非空，一键缩放已禁用（请手动缩放表内幅值{sug}）";
+                }
             }
         }
         catch (Exception ex)
@@ -397,6 +423,11 @@ public partial class MainForm
         if (_device == null || !_device.IsConnected)
         {
             TipForm.Show(this, "未连接，无法启动波形", false, 2500);
+            return;
+        }
+        if (_device.IsHoming || (_device is ZMotionDeviceController zmcBusy && zmcBusy.IsZeroing))
+        {
+            TipForm.Show(this, "找零/归零正在进行中，无法启动波形", false, 2500);
             return;
         }
         if (!CommitInputsToConfig(out string err)) { TipForm.Show(this, err, false, 3000); return; }
@@ -429,6 +460,7 @@ public partial class MainForm
         _btnWfStart.Enabled = false;
         _btnWfStop.Enabled = false;
         _btnWfStart.Text = needHome ? "归0中…" : "启动中…";
+        if (needHome) SetZeroUi(true);   // 自动归零期间锁住点动/找零，避免与其并发下发运动
         ConfigService.TrySave(_config);
         var dev = _device;
 
@@ -443,6 +475,7 @@ public partial class MainForm
                 if (IsDisposed) return;
                 BeginInvoke(() =>
                 {
+                    if (needHome) SetZeroUi(false);
                     _btnWfStart.Text = "启动波形";
                     // 极短波形可能已跑完并先触发 WaveformStopped，此处按当前运行态设“停止”按钮，避免错乱
                     _btnWfStop.Enabled = dev.IsWaveformRunning;
@@ -455,38 +488,45 @@ public partial class MainForm
                 BeginInvoke(() =>
                 {
                     _btnWfStart.Text = "启动波形";
+                    if (needHome) SetZeroUi(false); else ValidateNow();   // 恢复按钮可用状态
                     TipForm.Show(this, "启动失败：" + ex.Message, false, 4000);
-                    ValidateNow();   // 恢复按钮可用状态
                 });
             }
         });
     }
 
+    /// <summary>
+    /// 当前模式是否使用了“显式表覆盖规则参数”的用户填写表（多正弦分量表 / PRTS 逐拍表）。
+    /// 非空时一键缩放禁用：缩放会原样改写用户指定的表内幅值；清空后按钮状态回到由面板数据校验决定。
+    /// </summary>
+    private bool HasExplicitTable() => ActiveMode() switch
+    {
+        WaveformMode.MultiSine => !string.IsNullOrWhiteSpace(_config.Waveform.MsTable.Value),
+        WaveformMode.Prts => !string.IsNullOrWhiteSpace(_config.Waveform.PrtsTable.Value),
+        _ => false,
+    };
+
     private void BtnWfScale_Click(object? sender, EventArgs e)
     {
         if (_wfLastResult == null || _wfLastResult.SuggestedScale <= 0 || _wfLastResult.SuggestedScale >= 1) return;
+        // 双保险防野入口（如旧缓存状态）：显式表非空时不缩表，直接提示手动处理
+        if (HasExplicitTable())
+        {
+            TipForm.Show(this, "显式分量表非空时禁用一键缩放，请手动等比缩放表内幅值", false, 3500);
+            return;
+        }
         double s = _wfLastResult.SuggestedScale;
         var w = _config.Waveform;
         switch (ActiveMode())
         {
             case WaveformMode.Sine: w.SineStrokeMm.Value *= s; break;
-            case WaveformMode.MultiSine:
-                w.MsFundAmpMmS.Value *= s;   // 规则法基频幅值
-                // 显式分量表非空时表覆盖规则，必须同步缩放表内各分量幅值，否则点了不生效
-                if (!string.IsNullOrWhiteSpace(w.MsTable.Value))
-                    w.MsTable.Value = WaveformFactory.ScaleComponentTable(w.MsTable.Value, s);
-                break;
+            case WaveformMode.MultiSine: w.MsFundAmpMmS.Value *= s; break;   // 规则法基频幅值（显式表非空已在上方拦截）
             case WaveformMode.Square:
                 // 途经点表 P/v 同步缩放（停顿不变），与校验器缩放搜索的时空等比语义一致
                 w.SqWaypoints.Value = WaveformFactory.ScaleWaypointTable(w.SqWaypoints.Value, s);
                 break;
             case WaveformMode.Pulse: w.PuSpeedMmS.Value *= s; break;
-            case WaveformMode.Prts:
-                w.PrtsV.Value *= s;   // 规则法的三态幅值
-                // 显式逐拍表非空时表覆盖规则，数值拍必须同步缩放，否则点了不生效（符号拍随 V 走不用改）
-                if (!string.IsNullOrWhiteSpace(w.PrtsTable.Value))
-                    w.PrtsTable.Value = WaveformFactory.ScalePrtsTable(w.PrtsTable.Value, s);
-                break;
+            case WaveformMode.Prts: w.PrtsV.Value *= s; break;   // 规则法的三态幅值（显式逐拍表非空已在上方拦截）
         }
         RefreshActiveTab();   // 用新 config 回填输入框
         // 回填时 TextChanged 被 _suppressSineLinkage 拦截，不会自动触发校验，
@@ -502,7 +542,7 @@ public partial class MainForm
         {
             var rt = WaveformFactory.Build(_config);
             var series = WaveformSampler.Capture(rt.Generator, rt.DtSec, rt.Limits);
-            new WaveformPreviewForm(series).Show(this);   // 非模式，属主为主窗体
+            OpenSinglePreviewWindow(new WaveformPreviewForm(series));
         }
         catch (Exception ex)
         {
@@ -521,12 +561,30 @@ public partial class MainForm
         try
         {
             var rt = WaveformFactory.Build(_config);
-            WaveformPreviewForm.CreateLive(_device, rt.DtSec, rt.Limits, rt.Generator.ModeName).Show(this);
+            OpenSingleLiveWindow(WaveformPreviewForm.CreateLive(_device, rt.DtSec, rt.Limits, rt.Generator.ModeName));
         }
         catch (Exception ex)
         {
             TipForm.Show(this, "打开实时曲线失败：" + ex.Message, false, 4000);
         }
+    }
+
+    /// <summary>轨迹预览单窗口：关掉上一个（含离线预览与实时各自独立）再显示新的。</summary>
+    private void OpenSinglePreviewWindow(WaveformPreviewForm win)
+    {
+        if (_wfPreviewWin is { IsDisposed: false }) _wfPreviewWin.Close();
+        _wfPreviewWin = win;
+        win.FormClosed += (_, _) => { if (_wfPreviewWin == win) _wfPreviewWin = null; };
+        win.Show(this);   // 非模式，属主为主窗体
+    }
+
+    /// <summary>实时曲线单窗口：旧窗口必须关掉（其内部订阅了 WaveformTick，留着会重复刷新且白耗）。</summary>
+    private void OpenSingleLiveWindow(WaveformPreviewForm win)
+    {
+        if (_wfLiveWin is { IsDisposed: false }) _wfLiveWin.Close();
+        _wfLiveWin = win;
+        win.FormClosed += (_, _) => { if (_wfLiveWin == win) _wfLiveWin = null; };
+        win.Show(this);
     }
 
     /// <summary>把 config 值回填到当前模式页的输入框（缩放后刷新用）。</summary>
@@ -553,24 +611,24 @@ public partial class MainForm
         var dict = _modeInputs[(int)mode];
 
         // 公共参数
-        if (!double.TryParse(_txtWfDt.Text, NumberStyles.Float, Inv, out double dtms) || dtms < 1)
+        if (!double.TryParse(_txtWfDt.Text, NumberStyles.Float, Inv, out double dtms) || !double.IsFinite(dtms) || dtms < 1 || dtms > int.MaxValue)
         { error = "控制周期必须 >= 1ms"; return false; }
         w.ControlPeriodMs.Value = (int)Math.Round(dtms);
-        if (!double.TryParse(_txtWfAccel.Text, NumberStyles.Float, Inv, out double accel))
+        if (!double.TryParse(_txtWfAccel.Text, NumberStyles.Float, Inv, out double accel) || !double.IsFinite(accel))
         { error = "加速度上限格式错误"; return false; }
         w.AccelLimitMmS2.Value = accel;
-        if (!double.TryParse(_txtWfAmpK.Text, NumberStyles.Float, Inv, out double ampK) || ampK < 1 || ampK > 3)
+        if (!double.TryParse(_txtWfAmpK.Text, NumberStyles.Float, Inv, out double ampK) || !double.IsFinite(ampK) || ampK < 1 || ampK > 3)
         { error = "放大K 需为 1~3 之间的数（1=不放大）"; return false; }
         w.StrokeAmpK.Value = ampK;
         w.PosCorrEnabled.Value = _chkPosCorr.Checked;
-        if (!double.TryParse(_txtPosCorrKp.Text, NumberStyles.Float, Inv, out double corrKp) || corrKp < 0.01 || corrKp > 2)
+        if (!double.TryParse(_txtPosCorrKp.Text, NumberStyles.Float, Inv, out double corrKp) || !double.IsFinite(corrKp) || corrKp < 0.01 || corrKp > 2)
         { error = "校正增益Kp需为 0.01~2 之间的数（1/s）"; return false; }
         w.PosCorrKpPerS.Value = corrKp;
-        if (!double.TryParse(_txtPosCorrMax.Text, NumberStyles.Float, Inv, out double corrMax) || corrMax < 1 || corrMax > 50)
+        if (!double.TryParse(_txtPosCorrMax.Text, NumberStyles.Float, Inv, out double corrMax) || !double.IsFinite(corrMax) || corrMax < 1 || corrMax > 50)
         { error = "校正速度上限需为 1~50 之间的数（mm/s）"; return false; }
         w.PosCorrMaxMmS.Value = corrMax;
 
-        bool D(string key, out double v) { v = 0; return dict.TryGetValue(key, out var tb) && double.TryParse(tb.Text, NumberStyles.Float, Inv, out v); }
+        bool D(string key, out double v) { v = 0; return dict.TryGetValue(key, out var tb) && double.TryParse(tb.Text, NumberStyles.Float, Inv, out v) && double.IsFinite(v); }
         bool I(string key, out int v) { v = 0; return dict.TryGetValue(key, out var tb) && int.TryParse(tb.Text.Trim(), out v); }
         string Get(string key) => dict.TryGetValue(key, out var tb) ? tb.Text.Trim() : "";
 
@@ -722,6 +780,9 @@ public partial class MainForm
                 case WaveformStopReason.Completed:
                     TipForm.Show(this, "波形已完成", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
                     break;
+                case WaveformStopReason.Faulted:
+                    TipForm.Show(this, "波形异常中止（详见程序目录 app.log）", false, 6000);
+                    break;
                     // UserStopped：用户主动停止，无需额外提示
             }
 
@@ -767,6 +828,7 @@ public partial class MainForm
             {
                 _btnWfStart.Enabled = false;   // 归零期间锁住启动入口，防重入
                 _btnWfStart.Text = "结束归0中…";
+                SetZeroUi(true);   // 同步锁住点动/找零，避免与结束后的自动归零并发
                 Task.Run(() =>
                 {
                     string? homeErr = null;
@@ -787,8 +849,8 @@ public partial class MainForm
                     BeginInvoke(() =>
                     {
                         _btnWfStart.Text = "启动波形";
+                        SetZeroUi(false);   // 解锁点动/找零，并按校验结果刷新启动按钮
                         if (homeErr != null) TipForm.Show(this, "结束后归零失败：" + homeErr, false, 6000);
-                        ValidateNow();   // 按校验结果重新启用按钮
                     });
                 });
             }

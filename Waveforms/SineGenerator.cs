@@ -52,6 +52,11 @@ public sealed class SineGenerator : IWaveformGenerator
     /// <summary>正弦速度连续可导，加速度由波形本身决定，需判限。</summary>
     public bool ContinuousVelocity => true;
 
+    /// <summary>正弦本体峰值加速度；间歇边界的零速阶跃由控制器减速斜坡钳制，不参与判限。</summary>
+    public double AnalyticalPeakAccelMmS2 => PeakAccelMmS2;
+
+    public double MaxFrequencyHz => FreqHz;
+
     public double TotalDurationSeconds => _duration;
 
     public void Reset() { /* 纯时间驱动，无内部状态 */ }

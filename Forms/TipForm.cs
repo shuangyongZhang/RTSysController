@@ -11,6 +11,7 @@ public sealed class TipForm : Form
     private const int TipMaxHeight = 170;
 
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly Font _font;
 
     private TipForm(string message, bool success, int displayMs)
     {
@@ -22,13 +23,13 @@ public sealed class TipForm : Form
             ? Color.FromArgb(76, 175, 80)
             : Color.FromArgb(229, 57, 53);
 
-        var font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+        _font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
 
         // 按文字量计算弹窗高度，保证较长的失败原因也能完整显示
         int height;
         using (Graphics g = CreateGraphics())
         {
-            SizeF measured = g.MeasureString(message, font, TipWidth - 24);
+            SizeF measured = g.MeasureString(message, _font, TipWidth - 24);
             height = (int)Math.Ceiling(measured.Height) + 22;
         }
 
@@ -40,7 +41,7 @@ public sealed class TipForm : Form
             Text = message,
             Dock = DockStyle.Fill,
             ForeColor = Color.White,
-            Font = font,
+            Font = _font,
             TextAlign = ContentAlignment.MiddleCenter,
             Padding = new Padding(10, 4, 10, 4)
         };
@@ -65,6 +66,7 @@ public sealed class TipForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _font.Dispose();
         }
         base.Dispose(disposing);
     }

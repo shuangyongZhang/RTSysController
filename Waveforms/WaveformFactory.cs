@@ -47,7 +47,7 @@ public static class WaveformFactory
             WaveformMode.Pulse => new PulseGenerator(
                 w.PuSpeedMmS.Value, ParseDoubles(w.PuDurations.Value), Math.Max(1, w.PuCycles.Value), w.PuGapS.Value),
 
-            WaveformMode.Prts => BuildPrts(w, dt),
+            WaveformMode.Prts => BuildPrts(w, dt, lim),
 
             _ => throw new InvalidOperationException($"未知波形模式 {mode}"),
         };
@@ -70,8 +70,9 @@ public static class WaveformFactory
             w.MsDecayP.Value, phase, w.MsSeed.Value, w.MsDurationS.Value);
     }
     
-    /// <summary>PRTS 构造：显式速度序列优先（逐拍原样下发），为空则回退规则法随机生成。</summary>
-    private static IWaveformGenerator BuildPrts(WaveformConfig w, double dt)
+    /// <summary>PRTS 构造：显式速度序列优先（逐拍原样下发），为空则回退规则法随机生成。
+    /// 规则法把加速度上限与 PRTS 减速度传入生成器，生成时按两者较小者规划斜坡。</summary>
+    private static IWaveformGenerator BuildPrts(WaveformConfig w, double dt, MotionLimits lim)
     {
         if (!string.IsNullOrWhiteSpace(w.PrtsTable.Value))
         {
@@ -80,7 +81,8 @@ public static class WaveformFactory
         }
         return new PrtsGenerator(
             w.PrtsV.Value, Math.Max(1, w.PrtsK.Value), w.PrtsS.Value,
-            w.PrtsDurationS.Value, w.PrtsSeed.Value, dt);
+            w.PrtsDurationS.Value, w.PrtsSeed.Value, dt,
+            lim.AccelLimitMmS2, lim.DecelLimitMmS2);
     }
 
     /// <summary>由软限位（units）换算成 mm 域的运行限制，并携带软限位保护开关状态。
@@ -154,7 +156,7 @@ public static class WaveformFactory
     }
     
     /// <summary>
-    /// 解析 PRTS 显式逐拍速度序列：每个 token 一拍，以逗号/空格/分号/制表符/换行分隔。
+    /// 解析 PRTS 显式速度序列：每个 token 代表一个控制周期 dt 的速度采样，以逗号/空格/分号/制表符/换行分隔。
     /// token 可为符号档位“+”/“-”/“0”（按速度幅值 V 取 ±V/0；也支持 p/m/P/M），或直接写 mm/s 数值（如 +100/-100/0）。
     /// </summary>
     public static IReadOnlyList<double> ParsePrtsSequence(string s, double V)
@@ -175,21 +177,6 @@ public static class WaveformFactory
         return list;
     }
 
-    /// <summary>把显式分量表中各分量幅值 A 按 s 缩放（f/φ 不变），供“一键缩放至安全”使用。</summary>
-    public static string ScaleComponentTable(string table, double s)
-    {
-        var comps = ParseComponents(table);
-        var sb = new StringBuilder();
-        foreach (var c in comps)
-        {
-            if (sb.Length > 0) sb.Append(';');
-            sb.Append(c.FreqHz.ToString("0.####", Inv)).Append(',')
-              .Append((c.AmpMmS * s).ToString("0.####", Inv)).Append(',')
-              .Append((c.PhaseRad * 180.0 / Math.PI).ToString("0.####", Inv));
-        }
-        return sb.ToString();
-    }
-
     /// <summary>把方波途经点表 "P,v,t;..." 中的位置 P 与速度 v 按 s 等比缩放（停顿 t 不变），供“一键缩放至安全”使用。</summary>
     public static string ScaleWaypointTable(string table, double s)
     {
@@ -201,20 +188,6 @@ public static class WaveformFactory
             sb.Append((w.PosMm * s).ToString("0.####", Inv)).Append(',')
               .Append((w.SpeedMmS * s).ToString("0.####", Inv)).Append(',')
               .Append(w.DwellSec.ToString("0.####", Inv));
-        }
-        return sb.ToString();
-    }
-
-    /// <summary>把 PRTS 显式逐拍表中的数值速度按 s 缩放；+/0/- 符号拍随速度幅值走，原样保留。</summary>
-    public static string ScalePrtsTable(string table, double s)
-    {
-        var sb = new StringBuilder();
-        foreach (string tok in (table ?? string.Empty).Split(
-            new[] { ',', ' ', ';', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (sb.Length > 0) sb.Append(',');
-            if ((tok is "+" or "p" or "P" or "-" or "m" or "M" or "0") || !TryD(tok, out double v)) sb.Append(tok);
-            else sb.Append((v * s).ToString("0.####", Inv));
         }
         return sb.ToString();
     }

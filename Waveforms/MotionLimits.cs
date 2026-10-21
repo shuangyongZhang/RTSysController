@@ -20,8 +20,8 @@ public sealed class MotionLimits
     public double AccelLimitMmS2 { get; }
     
     /// <summary>
-    /// 运行期减速度上限（mm/s²）：阶梯型模式（方波/脉冲/PRTS）可在各自页签单独设置。
-    /// &lt;=0 时运行期回退使用 <see cref="AccelLimitMmS2"/>。
+    /// 运行期与校验器共用的减速度上限（mm/s²）：阶梯型模式（方波/脉冲/PRTS）可在各自页签单独设置。
+    /// 校验器的跟随模型用它预测减速/换向超程；&lt;=0 时回退使用 <see cref="AccelLimitMmS2"/>。
     /// </summary>
     public double DecelLimitMmS2 { get; init; }
 

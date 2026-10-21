@@ -8,6 +8,9 @@ obj/
 # 压缩包
 *.zip
 
+# 运行日志
+*.log
+
 # .NET 编译产物
 *.exe
 *.pdb

@@ -6,7 +6,7 @@ namespace MotorControlApp.Forms;
 
 /// <summary>
 /// 轨迹预览窗口：离线仿真逐拍序列双联图（上=速度 v(t)，下=积分位置 p(t)）。
-/// 纯 GDI 绘制：橙色速度阶梯 + 青色位置阶梯(带填充)，位置窗含零线、软限位虚线与网格。
+/// 纯 GDI 绘制：橙色速度阶梯 + 青色位置折线(带填充)，位置窗含零线、软限位虚线与网格。
 /// 数据来自 WaveformSampler（与启动校验同一积分回路），不依赖硬件连接。Esc 或关窗退出。
 /// 横轴固定时间比例尺（一屏 10s，PRTS 一屏 40 拍），不随运行时长压缩：
 /// 窗体底部拖拽条左右平移视图窗口；实时模式运行中自动跟随最新数据并锁定拖拽，结束后拖拽回看历史段。
@@ -73,7 +73,10 @@ public sealed class WaveformPreviewForm : Form
         BackColor = Color.White;
         KeyPreview = true;
         KeyDown += (_, ev) => { if (ev.KeyCode == Keys.Escape) Close(); };
-        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+        // ResizeRedraw：整幅图按 ClientSize 重算坐标，窗口放大/最大化时必须整窗重绘，
+        // 否则只有新暴露的边条被重画，旧尺寸的曲线/标题/图例残留在原位形成重影。
+        SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         UpdateStyles();
 
         // 底部拖拽条：固定比例尺下左右平移视图；实时运行中锁定，结束后解禁回看
@@ -178,7 +181,8 @@ public sealed class WaveformPreviewForm : Form
             : $"{_s.ModeName}：速度 v(t)（上）与积分位置 p(t)（下）   采样 dt={_s.DtSec * 1000:F0}ms   时长 {tEnd:F1}s";
         g.DrawString(head, Font, Brushes.Black, MarginL, 8);
         if (!_s.Converged)
-            g.DrawString("[仿真达上限未收敛，序列被截断，图形仅供参考]", _smallFont, new SolidBrush(Color.Red), MarginL + 4, 28);
+            using (var red = new SolidBrush(Color.Red))
+                g.DrawString("[仿真达上限未收敛，序列被截断，图形仅供参考]", _smallFont, red, MarginL + 4, 28);
         if (_s.TimeSec.Length < 2)
         {
             string hint = _liveDevice is not null ? "已订阅波形拍事件，启动波形后自动绘制…" : "无数据：请检查参数（时长/循环数）";
@@ -230,8 +234,9 @@ public sealed class WaveformPreviewForm : Form
         string winInfo = isPrts
             ? $"窗口 {(int)(tStart / dtSec)}~{(int)(tStop / dtSec)}拍 / 共{nTicks}拍"
             : $"窗口 {tStart:F1}~{tStop:F1}s / 共 {tEnd:F1}s";
-        g.DrawString(winInfo, _smallFont, Brushes.Gray,
-            new RectangleF(ClientSize.Width - 300, 10, 284, 16), new StringFormat { Alignment = StringAlignment.Far });
+        using (var winSf = new StringFormat { Alignment = StringAlignment.Far })
+            g.DrawString(winInfo, _smallFont, Brushes.Gray,
+                new RectangleF(ClientSize.Width - 300, 10, 284, 16), winSf);
 
         float Xv(double t) => vRect.X + (float)((t - tStart) / winSec) * vRect.Width;
         float Yv(double v) => vRect.Y + (float)((vMax - v) / (2 * vMax)) * vRect.Height;
@@ -255,29 +260,21 @@ public sealed class WaveformPreviewForm : Form
         g.SetClip(Rectangle.Union(vRect, pRect));
 
         // ---- 速度阶梯线 ----
-        var vPts = MapPoints(tW, vW, Xv, Yv);
+        var vPts = MapStepPoints(tW, vW, Xv, Yv);
         using (var pen = new Pen(VelColor, 2f)) g.DrawLines(pen, vPts);
 
-        // ---- 位置填充（以 0 线为分界：正半轴向上填、负半轴向下填）+ 阶梯线 ----
-        var pPts = MapPoints(tW, pW, Xv, Yp);
+        // ---- 位置折线（位置是速度的积分，拍间连续变化）+ 以 0 线为分界的填充 ----
+        var pPts = MapLinePoints(tW, pW, Xv, Yp);
         float zeroY = Yp(Math.Clamp(0, pMin, pMax));
         using (var fb = new SolidBrush(PosFillColor))
-        {
-            // MapPoints 输出为阶梯点对 (x0,y),(x1,y)（同 y），逐段填充曲线到 0 线之间的矩形，
-            // 保证正负各自以 0 为界分布（FillPolygon 对跨 0 自交多边形填充会错乱）。
-            for (int i = 0; i + 1 < pPts.Length; i += 2)
-            {
-                float x0 = pPts[i].X, x1 = pPts[i + 1].X, y = pPts[i].Y;
-                if (x1 <= x0) continue;
-                float top = Math.Min(y, zeroY), h = Math.Abs(y - zeroY);
-                g.FillRectangle(fb, x0, top, x1 - x0, h);
-            }
-        }
+            FillFromZero(g, fb, pPts, zeroY);
         using (var pen = new Pen(PosColor, 2f)) g.DrawLines(pen, pPts);
 
         g.Restore(clipSt);
-        g.DrawString(isPrts ? "速度 V(K)" : "速度 v(t)", _smallFont, new SolidBrush(VelColor), MarginL - 58, vRect.Y - 16);
-        g.DrawString(isPrts ? "位置 p(K)" : "位置 p(t)", _smallFont, new SolidBrush(PosColor), MarginL - 58, pRect.Y - 16);
+        using (var velBrush = new SolidBrush(VelColor))
+            g.DrawString(isPrts ? "速度 V(K)" : "速度 v(t)", _smallFont, velBrush, MarginL - 58, vRect.Y - 16);
+        using (var posBrush = new SolidBrush(PosColor))
+            g.DrawString(isPrts ? "位置 p(K)" : "位置 p(t)", _smallFont, posBrush, MarginL - 58, pRect.Y - 16);
 
         // ---- 软限位虚线 ----
         if (limInView)
@@ -328,9 +325,8 @@ public sealed class WaveformPreviewForm : Form
         return output;
     }
 
-    /// <summary>把每拍采样点展开成阶梯图（steps-post）：一拍内水平保持到下一拍起点，拍间形成垂直跳变，
-    /// 忠实反映 CSV 速度模式“逐拍恒定速度”的物理本质（直上直下），而非把跳变摊成斜线。</summary>
-    private static PointF[] MapPoints(double[] t, double[] v, Func<double, float> mx, Func<double, float> my)
+    /// <summary>速度阶梯：每拍速度保持到下一拍起点，拍间形成垂直跳变，忠实反映逐拍恒定速度指令。</summary>
+    private static PointF[] MapStepPoints(double[] t, double[] v, Func<double, float> mx, Func<double, float> my)
     {
         var dec = Decimate(t, v, TargetPoints);
         int n = dec.Count;
@@ -345,6 +341,43 @@ public sealed class WaveformPreviewForm : Form
             pts.Add(new PointF(x1, y));
         }
         return pts.ToArray();
+    }
+
+    /// <summary>位置折线：位置是速度的积分，拍与拍之间连续变化，不能按速度那样画阶梯
+    /// （控制周期加大时阶梯会非常明显，且与真机连续运动不符）。</summary>
+    private static PointF[] MapLinePoints(double[] t, double[] v, Func<double, float> mx, Func<double, float> my)
+    {
+        var dec = Decimate(t, v, TargetPoints);
+        var pts = new PointF[dec.Count];
+        for (int i = 0; i < dec.Count; i++)
+            pts[i] = new PointF(mx(dec[i].T), my(dec[i].V));
+        return pts;
+    }
+
+    /// <summary>位置曲线到 0 线的填充：逐段梯形；跨 0 的段在零点切开，避免自交多边形填充错乱。</summary>
+    private static void FillFromZero(Graphics g, Brush brush, PointF[] pts, float zeroY)
+    {
+        var quad = new PointF[4];
+        var tri = new PointF[3];
+        for (int i = 0; i + 1 < pts.Length; i++)
+        {
+            float x0 = pts[i].X, y0 = pts[i].Y, x1 = pts[i + 1].X, y1 = pts[i + 1].Y;
+            if (x1 <= x0) continue;
+            if ((y0 >= zeroY) == (y1 >= zeroY))
+            {
+                quad[0] = new PointF(x0, y0); quad[1] = new PointF(x1, y1);
+                quad[2] = new PointF(x1, zeroY); quad[3] = new PointF(x0, zeroY);
+                g.FillPolygon(brush, quad);
+            }
+            else
+            {
+                float xz = x0 + (zeroY - y0) / (y1 - y0) * (x1 - x0);
+                tri[0] = new PointF(x0, y0); tri[1] = new PointF(xz, zeroY); tri[2] = new PointF(x0, zeroY);
+                g.FillPolygon(brush, tri);
+                tri[0] = new PointF(x1, y1); tri[1] = new PointF(xz, zeroY); tri[2] = new PointF(x1, zeroY);
+                g.FillPolygon(brush, tri);
+            }
+        }
     }
 
     private void DrawGridAndAxes(Graphics g, Rectangle r, double vmin, double vmax, Func<double, float> mapY, string valFmt)

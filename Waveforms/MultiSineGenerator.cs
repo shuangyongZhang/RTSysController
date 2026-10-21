@@ -74,6 +74,9 @@ public sealed class MultiSineGenerator : IWaveformGenerator
     /// <summary>多正弦为连续分量叠加，加速度由波形本身决定，需判限。</summary>
     public bool ContinuousVelocity => true;
 
+    /// <summary>最高频率分量（含显式分量表中的任意 fk），供奈奎斯特检查。</summary>
+    public double MaxFrequencyHz => _comps.Max(c => Math.Abs(c.FreqHz));
+
     public double TotalDurationSeconds => _duration;
 
     public void Reset() { /* 纯时间驱动，无内部状态 */ }

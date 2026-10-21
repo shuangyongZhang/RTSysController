@@ -15,7 +15,9 @@ public sealed class WaveformSeries
 
 /// <summary>
 /// 轨迹采样器：直接复用 WaveformValidator.SimulateCore（同一起点、同一 dt、同一终止条件、
-/// 同一含加速度跟随模型的积分回路），区别只是把每一拍的 v 与预测实际位置记录下来用于绘图。
+/// 同一含加减速跟随模型的积分回路），区别只是把每一拍的 v 与预测实际位置记录下来用于绘图。
+/// 位置反馈波形（方波/脉冲）按校验器给出的保守实际周期采样；校验标签的"行程"还会
+/// 额外加上一拍反馈滞后余量，故该处可能比本曲线略宽，属于最坏相位保护。
 /// 因此预览图的位置曲线与校验标签的"行程"、真机实测三者同源一致。
 /// </summary>
 public static class WaveformSampler
@@ -25,7 +27,9 @@ public static class WaveformSampler
         var ts = new List<double>();
         var vs = new List<double>();
         var ps = new List<double>();
-        var core = WaveformValidator.SimulateCore(g, dtSec, WaveformValidator.AccelFor(lim),
+        double simDt = WaveformValidator.SimDtFor(g, dtSec);
+        var core = WaveformValidator.SimulateCore(g, simDt,
+            WaveformValidator.AccelFor(lim), WaveformValidator.DecelFor(lim),
             (t, v, pos) => { ts.Add(t); vs.Add(v); ps.Add(pos); });
 
         return new WaveformSeries
@@ -33,7 +37,7 @@ public static class WaveformSampler
             TimeSec = ts.ToArray(),
             VelMmS = vs.ToArray(),
             PosMm = ps.ToArray(),
-            DtSec = dtSec,
+            DtSec = simDt,
             Converged = core.Ended,
             ModeName = g.ModeName,
             Limits = lim,

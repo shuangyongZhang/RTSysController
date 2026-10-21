@@ -41,9 +41,9 @@ public partial class MainForm : Form
     private System.Windows.Forms.Timer? _axisTimer;  // 连接后轮询 Dpos
 
     // 运动控制
-    private Button _btnForward = null!;
-    private Button _btnBackward = null!;
-    private Button _btnStop = null!;
+    private Button _btnJogBack = null!;
+    private Button _btnMotorStop = null!;
+    private Button _btnJogForward = null!;
 
     // 轴状态灯（右下面板）：使能/±软限位/±硬限位/伺服报警
     private Label _lampEnable = null!;
@@ -292,6 +292,7 @@ public partial class MainForm : Form
         if (_device is not ZMotionDeviceController zmc) return;
         if (!zmc.IsConnected) { TipForm.Show(this, "未连接，无法归零", false, 2000); return; }
         if (zmc.IsHoming) return;
+        if (zmc.IsZeroing) { TipForm.Show(this, "归零正在进行中，请稍候", false, 2000); return; }
         if (zmc.IsWaveformRunning)
         {
             TipForm.Show(this, "波形运行中，请先停止波形再归零", false, 2500);
@@ -318,12 +319,14 @@ public partial class MainForm : Form
     {
         bool connected = _device != null && _device.IsConnected;
         bool homing = _device?.IsHoming ?? false;
-        _btnZeroPosition.Enabled = !busy && connected;
+        _btnZeroPosition.Enabled = !busy && connected && !homing;
         _btnZeroPosition.Text = busy ? "归零中…" : "归零";
         _btnHome.Enabled = !busy && connected && !homing;
-        _btnForward.Enabled = !busy && connected && !homing;
-        _btnBackward.Enabled = !busy && connected && !homing;
-        _btnStop.Enabled = !busy && connected;
+        _btnJogBack.Enabled = !busy && connected && !homing;
+        _btnMotorStop.Enabled = !busy && connected && !homing;
+        _btnJogForward.Enabled = !busy && connected && !homing;
+        if (busy) _btnWfStart.Enabled = false;   // 归零运动期间禁止启动波形
+        else ValidateNow();                       // 按校验结果恢复启动按钮
     }
 
     /// <summary>复位找零：后台线程执行回零（阻塞式），期间禁用点动/波形/找零按钮，完成后弹提。</summary>
@@ -335,6 +338,11 @@ public partial class MainForm : Form
             return;
         }
         if (_device.IsHoming) return;
+        if (_device is ZMotionDeviceController { IsZeroing: true })
+        {
+            TipForm.Show(this, "归零正在进行中，请稍候再找零", false, 2000);
+            return;
+        }
         if (_device.IsWaveformRunning)
         {
             TipForm.Show(this, "波形运行中，请先停止波形再找零", false, 2500);
@@ -376,11 +384,15 @@ public partial class MainForm : Form
     private void SetHomingUi(bool busy)
     {
         bool connected = _device != null && _device.IsConnected;
+        bool zeroing = _device is ZMotionDeviceController { IsZeroing: true };
         _btnHome.Enabled = !busy && connected;
         _btnHome.Text = busy ? "找零中…" : "复位找零";
-        _btnForward.Enabled = !busy && connected;
-        _btnBackward.Enabled = !busy && connected;
-        _btnStop.Enabled = !busy && connected;
+        _btnZeroPosition.Enabled = !busy && connected && !zeroing;
+        _btnJogBack.Enabled = !busy && connected && !zeroing;
+        _btnMotorStop.Enabled = !busy && connected;
+        _btnJogForward.Enabled = !busy && connected && !zeroing;
+        if (busy) _btnWfStart.Enabled = false;   // 找零运动期间禁止启动波形
+        else ValidateNow();                       // 按校验结果恢复启动按钮
     }
 
     // ============================================================ 运动控制
@@ -394,19 +406,19 @@ public partial class MainForm : Form
             Size = new Size(408, 86)
         };
 
-        _btnForward = new Button { Text = "◀  后退", Location = new Point(16, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold) };
-        _btnForward.Click += (_, _) => SafeRun(() => _device?.Backward(), ShowErr);
-        _btnForward.Enabled = _device != null && _device.IsConnected;
+        _btnJogBack = new Button { Text = "◀  后退", Location = new Point(16, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold) };
+        _btnJogBack.Click += (_, _) => SafeRun(() => _device?.Backward(), ShowErr);
+        _btnJogBack.Enabled = _device != null && _device.IsConnected;
 
-        _btnBackward = new Button { Text = "停止", Location = new Point(149, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold), BackColor = Color.LightCoral };
-        _btnBackward.Click += (_, _) => SafeRun(() => _device?.Stop(), ShowErr);
-        _btnBackward.Enabled = _device != null && _device.IsConnected;
+        _btnMotorStop = new Button { Text = "停止", Location = new Point(149, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold), BackColor = Color.LightCoral };
+        _btnMotorStop.Click += (_, _) => SafeRun(() => _device?.Stop(), ShowErr);
+        _btnMotorStop.Enabled = _device != null && _device.IsConnected;
 
-        _btnStop = new Button { Text = "前进  ▶", Location = new Point(282, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold) };
-        _btnStop.Click += (_, _) => SafeRun(() => _device?.Forward(), ShowErr);
-        _btnStop.Enabled = _device != null && _device.IsConnected;
+        _btnJogForward = new Button { Text = "前进  ▶", Location = new Point(282, 30), Size = new Size(110, 44), Font = new Font(Font.FontFamily, 12, FontStyle.Bold) };
+        _btnJogForward.Click += (_, _) => SafeRun(() => _device?.Forward(), ShowErr);
+        _btnJogForward.Enabled = _device != null && _device.IsConnected;
 
-        group.Controls.AddRange(new Control[] { _btnForward, _btnBackward, _btnStop });
+        group.Controls.AddRange(new Control[] { _btnJogBack, _btnMotorStop, _btnJogForward });
         Controls.Add(group);
     }
 
@@ -557,8 +569,9 @@ public partial class MainForm : Form
             Array.Clear(_zeroOffsets, 0, _zeroOffsets.Length);
             // 同步清除 config 中的归零值并落盘
             _config.Sensor.SetZeroOffsets(_zeroOffsets);
-            ConfigService.TrySave(_config);
-            TipForm.Show(this, "零点已清除并保存", true, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
+            bool saved = ConfigService.TrySave(_config);
+            TipForm.Show(this, saved ? "零点已清除并保存" : "零点已清除，但写入 config.json 失败（详见 app.log）",
+                saved, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
         };
         group.Controls.Add(btnClearZero);
 
@@ -714,8 +727,11 @@ public partial class MainForm : Form
         {
             // 持久化归零校准值，下次启动自动加载
             _config.Sensor.SetZeroOffsets(_zeroOffsets);
-            ConfigService.TrySave(_config);
-            TipForm.Show(this, $"已归零并保存：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}", true, 3000);
+            bool saved = ConfigService.TrySave(_config);
+            TipForm.Show(this, saved
+                    ? $"已归零并保存：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}"
+                    : $"已归零（仅本次运行有效），写入 config.json 失败：ch0={_zeroOffsets[0]} ch1={_zeroOffsets[1]} ch2={_zeroOffsets[2]} ch3={_zeroOffsets[3]}",
+                saved, 3000);
         }
         else
             TipForm.Show(this, "EC8124 读取失败，未校准", false, (int)(_config.Ui.GetTipDisplaySeconds() * 1000));
@@ -723,9 +739,9 @@ public partial class MainForm : Form
 
     private void SetConnectedButtons(bool connected)
     {
-        _btnForward.Enabled = connected;
-        _btnBackward.Enabled = connected;
-        _btnStop.Enabled = connected;
+        _btnJogBack.Enabled = connected;
+        _btnMotorStop.Enabled = connected;
+        _btnJogForward.Enabled = connected;
         _btnApplyLimits.Enabled = connected;
         _btnZeroPosition.Enabled = connected;
         _btnHome.Enabled = connected && !(_device?.IsHoming ?? false);
@@ -740,6 +756,7 @@ public partial class MainForm : Form
     private void StartAxisTimer()
     {
         _axisTimer?.Stop();
+        _axisTimer?.Dispose();
         _axisTimer = new System.Windows.Forms.Timer { Interval = 200 };
         _axisTimer.Tick += (_, _) =>
         {
@@ -902,6 +919,8 @@ public partial class MainForm : Form
     {
         if (!TryParseInt(_txtAxisNumber.Text, out int axis)) return "轴号必须是整数";
         if (!TryParseFloat(_txtUnits.Text, out float units) || units <= 0) return "脉冲当量必须 > 0";
+        if (_config.ZMotion.Lead.Value <= 0 || _config.ZMotion.GearDenominator.Value <= 0)
+            return "丝杆导程/减速比必须 > 0（请检查 config.json）";
         if (!TryParseFloat(_txtSpeed.Text, out float speedMm) || speedMm <= 0) return "速度必须 > 0";
         if (!TryParseFloat(_txtAccel.Text, out float accelMm) || accelMm <= 0) return "加速度必须 > 0";
         if (!TryParseFloat(_txtDecel.Text, out float decelMm) || decelMm <= 0) return "减速度必须 > 0";
@@ -933,10 +952,25 @@ public partial class MainForm : Form
     private static bool TryParseInt(string? t, out int v) => int.TryParse(t, out v);
     private static bool TryParseFloat(string? t, out float v) => float.TryParse(t, out v);
 
-    /// <summary>UI 物理量 (mm, mm/s, mm/s²) → config/PAC 内部 (user units)。与 Waveforms.MotionUnits 的换算保持完全一致。</summary>
-    private float ToUnits(float mmValue) => mmValue / 10f * _config.ZMotion.GearDenominator.Value / _config.ZMotion.Lead.Value / _config.ZMotion.Units.Value;
     /// <summary>config/PAC 内部 (user units) → UI 物理量 (mm, mm/s, mm/s²)。与 Waveforms.MotionUnits 的换算保持完全一致。</summary>
-    private float FromUnits(float u) => u * _config.ZMotion.Units.Value * _config.ZMotion.Lead.Value / _config.ZMotion.GearDenominator.Value * 10f;
+    private float FromUnits(float u)
+    {
+        EnsureUnitsValid();
+        return u * _config.ZMotion.Units.Value * _config.ZMotion.Lead.Value / _config.ZMotion.GearDenominator.Value * 10f;
+    }
+
+    /// <summary>UI 物理量 (mm, mm/s, mm/s²) → config/PAC 内部 (user units)。与 Waveforms.MotionUnits 的换算保持完全一致。</summary>
+    private float ToUnits(float mmValue)
+    {
+        EnsureUnitsValid();
+        return mmValue / 10f * _config.ZMotion.GearDenominator.Value / _config.ZMotion.Lead.Value / _config.ZMotion.Units.Value;
+    }
+
+    private void EnsureUnitsValid()
+    {
+        if (_config.ZMotion.Lead.Value == 0 || _config.ZMotion.GearDenominator.Value == 0 || _config.ZMotion.Units.Value == 0)
+            throw new InvalidOperationException("丝杆导程/减速比/脉冲当量不能为 0（请检查 config.json）");
+    }
 
     private static void SafeRun(Action action, Action<string> onError)
     {
@@ -951,6 +985,7 @@ public partial class MainForm : Form
 
     private void MainForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
+        StopAxisTimer();
         _device?.Disconnect();
         _device?.Dispose();
         ReadAndApplyParams(); // 尽力保存

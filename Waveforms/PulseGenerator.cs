@@ -46,6 +46,8 @@ public sealed class PulseGenerator : IWaveformGenerator
 
     public string ModeName => "脉冲";
 
+    public bool PositionFeedback => true;
+
     /// <summary>由循环次数决定结束，无固定总时长（同方波）。</summary>
     public double TotalDurationSeconds => double.PositiveInfinity;
 
@@ -65,7 +67,7 @@ public sealed class PulseGenerator : IWaveformGenerator
             case Phase.Out:
             {
                 double err = _peaks[_pulse] - curPosMm;   // 目标：名义峰值
-                if (Arrived(err)) { EnterBack(); return 0; }
+                if (Arrived(err, TolForPulse(_pulse))) { EnterBack(); return 0; }
                 _prevErr = err;
                 return Math.Sign(err) * _v;               // 朝峰值冲出
             }
@@ -73,7 +75,7 @@ public sealed class PulseGenerator : IWaveformGenerator
             case Phase.Back:
             {
                 double err = 0 - curPosMm;                // 目标：基位 0
-                if (Arrived(err)) { EnterGap(tSec); return 0; }
+                if (Arrived(err, TolForPulse(_pulse))) { EnterGap(tSec); return 0; }
                 _prevErr = err;
                 return Math.Sign(err) * _v;               // 退回基位
             }
@@ -92,11 +94,18 @@ public sealed class PulseGenerator : IWaveformGenerator
     /// 到位判据：① 误差在容差内；② 相邻两拍误差变号 = 本拍一步穿过了目标。
     /// 只用①时，若每拍位移 v·dt 大于容差会在目标两侧以 ±v 逐拍振荡（数字极限环），故加穿过判定。
     /// </summary>
-    private bool Arrived(double err)
+    private bool Arrived(double err, double tol)
     {
         bool crossed = !double.IsNaN(_prevErr) && err != 0 && Math.Sign(err) != Math.Sign(_prevErr);
-        return Math.Abs(err) <= _tolMm || crossed;
+        return Math.Abs(err) <= tol || crossed;
     }
+
+    /// <summary>
+    /// 每个脉冲的有效到位容差：名义峰值小于默认容差时按峰值等比缩小。
+    /// 否则极窄脉冲（Pk &lt; 0.5mm）在起点就满足 |Pk-0| ≤ tol，首拍即判到达 → 整个脉冲零运动。
+    /// Pk 正常时仍用默认容差，行为不变。
+    /// </summary>
+    private double TolForPulse(int pulse) => _peaks[pulse] < _tolMm ? _peaks[pulse] * 0.25 : _tolMm;
 
     private void EnterBack()
     {

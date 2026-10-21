@@ -101,4 +101,6 @@ public enum WaveformStopReason
     UserStopped,
     /// <summary>开启软限位保护时触碰软限位而中止。</summary>
     SoftLimit,
+    /// <summary>波形因未预期异常中止（非用户停止、非触限位）。</summary>
+    Faulted,
 }

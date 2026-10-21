@@ -57,3 +57,8 @@ else {
     Write-Host '    native: NativeDlls folder not found. For real EtherCAT hardware, put EtherCAT_DLL_x64.dll'
     Write-Host '            into a new "NativeDlls" project folder (auto-copied on build), or next to the exe.'
 }
+
+# 打包成功后顺手打开输出目录，双击 bat 时无需再手动找路径
+Write-Host ''
+Write-Host ('==> Opening publish folder: ' + $publishDir) -ForegroundColor Cyan
+Start-Process explorer.exe $publishDir

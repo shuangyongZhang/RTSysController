@@ -23,14 +23,15 @@ public class ZMotionDeviceController : IDeviceController
     private bool _wasOutOfLimit;      // 限位监控：上一轮是否越界（用于只提示一次）
     private volatile int _lastMoveDir;  // 最后一次用户指令方向：0=停止/未知，+1=前进，-1=后退（替代 speed 正负判断）
     private volatile bool _homing;        // 找零（回零）进行中
-    private int _connectedAxis = -1;     // 本次连接配置的轴号（防止在线改轴号后把参数下发到其他轴）
+    private volatile bool _zeroing;       // 归零（MoveToServoZero）进行中
+    private volatile int _connectedAxis = -1;     // 本次连接配置的轴号（防止在线改轴号后把参数下发到其他轴）
 
     // ---- 运动波形（CSV 逐拍下发）----
-    private WaveformRuntime? _wf;
-    private MotionUnits? _wfUnits;
+    private volatile WaveformRuntime? _wf;
+    private volatile MotionUnits? _wfUnits;
     private CancellationTokenSource? _wfCts;
     private volatile bool _wfRunning;
-    private int _wfLastDir;               // 波形运行中最后一次下发方向，避免重复 Vmove/Cancel
+    private volatile int _wfLastDir;               // 波形运行中最后一次下发方向，避免重复 Vmove/Cancel
 
     public ZMotionDeviceController(AppConfig config)
     {
@@ -46,6 +47,7 @@ public class ZMotionDeviceController : IDeviceController
 
     public bool IsWaveformRunning => _wfRunning;
     public bool IsHoming => _homing;
+    public bool IsZeroing => _zeroing;
 
     public Task<bool> ConnectAsync(CancellationToken cancellationToken = default)
     {
@@ -53,7 +55,13 @@ public class ZMotionDeviceController : IDeviceController
         {
             lock (_lock)
             {
-                if (_connected || _handle != IntPtr.Zero) return true;
+                if (_connected) return true;
+                if (_handle != IntPtr.Zero)
+                {
+                    // 上次连接在中途失败留下的句柄：先关掉再重连，否则 _connected=false 会让后续所有动作失败
+                    try { zmcaux.ZAux_Close(_handle); } catch { }
+                    _handle = IntPtr.Zero;
+                }
                 if (_disposed) throw new ObjectDisposedException(nameof(ZMotionDeviceController));
             }
 
@@ -158,17 +166,45 @@ public class ZMotionDeviceController : IDeviceController
                     }
                     catch { /* SDO 暂时不通则重试 */ }
                 }
+                var cts = _cts!;
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(1500, cancellationToken: _cts.Token);
-                    await SensorLoopAsync(_cts.Token);
+                    try
+                    {
+                        await Task.Delay(1500, cts.Token);
+                        await SensorLoopAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { AppLog.Error("传感器轮询", ex); }
                 }, cancellationToken);
-                _ = Task.Run(() => LimitMonitorLoopAsync(_cts.Token), cancellationToken);
+                _ = Task.Run(async () =>
+                {
+                    try { await LimitMonitorLoopAsync(cts.Token); }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { AppLog.Error("限位监控", ex); }
+                }, cancellationToken);
                 return true;
             }
             catch (DllNotFoundException ex)
             {
                 throw new InvalidOperationException("找不到正运动控制库 zauxdll.dll / zmotion.dll，请放到程序目录", ex);
+            }
+            catch
+            {
+                // 连接中途失败：释放已打开的句柄并复位状态，避免句柄泄漏和"假已连接"
+                lock (_lock)
+                {
+                    if (_handle != IntPtr.Zero)
+                    {
+                        try { zmcaux.ZAux_Close(_handle); } catch { }
+                        _handle = IntPtr.Zero;
+                    }
+                    _connected = false;
+                    try { _cts?.Cancel(); } catch { }
+                    try { _cts?.Dispose(); } catch { }
+                    _cts = null;
+                }
+                throw;
             }
         }, cancellationToken);
     }
@@ -196,7 +232,15 @@ public class ZMotionDeviceController : IDeviceController
         EnsureConnected();
         if (_wfRunning) throw new InvalidOperationException("波形运行中，请先停止波形再归零");
         if (_homing) throw new InvalidOperationException("找零正在进行中，请稍候");
+        if (_zeroing) throw new InvalidOperationException("归零正在进行中，请稍候");
 
+        _zeroing = true;
+        try { MoveToServoZeroCore(); }
+        finally { _zeroing = false; }
+    }
+
+    private void MoveToServoZeroCore()
+    {
         ZMotionConfig z = _cfg.ZMotion;
         int axis = z.GetAxisNumber();
         int timeoutMs = Math.Max(1000, z.HomePhaseTimeoutMs.Value);
@@ -218,7 +262,7 @@ public class ZMotionDeviceController : IDeviceController
         if (((hwSt & 0x10) != 0 && cur <= 0) || ((hwSt & 0x20) != 0 && cur >= 0))
         {
             // 走离量取“到 0 点距离”与 5mm 的较小者，脱困到位即等于归零方向正确
-            float escapeTarget = Math.Min(Math.Abs(cur), 5f / 10f * z.GearDenominator.Value / z.Lead.Value);
+            float escapeTarget = Math.Min(Math.Abs(cur), 5f / 10f * z.GearDenominator.Value / z.Lead.Value / z.Units.Value);
             if (escapeTarget < 1f) escapeTarget = 1f;
             string eDiag = EscapeHardLimit(axis, cur >= 0 ? -1 : 1, z, escapeTarget);
             LimitTriggered?.Invoke(this, $"归零前硬限位脱困：{eDiag}");
@@ -242,9 +286,9 @@ public class ZMotionDeviceController : IDeviceController
             {
                 Thread.Sleep(50);
                 int idle = 0;
-                zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref idle);   // IfIdle:0=运行 1=停止
+                if (zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref idle) != 0) continue;
                 if (idle == 0) { idleSameMs = 0; continue; }
-                zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref pos);
+                if (zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref pos) != 0) continue;
                 if (Math.Abs(pos) <= arriveTol) { arrived = true; break; }
                 // 空闲但位置在变（减速中/重新规划）不算卡死，只有长时间原地不动才提前退出
                 if (Math.Abs(pos - lastPos) < 0.5f) idleSameMs += 50; else idleSameMs = 0;
@@ -378,6 +422,11 @@ public class ZMotionDeviceController : IDeviceController
     private void RunMove(int dir, string label)
     {
         EnsureConnected();
+        // 手动点动与自动运动互斥：UI 失锁/自动归零未锁按钮时，这里必须兜底，
+        // 否则 Vmove 会插进正在执行的找零/归零/波形里，或与波形逐拍指令互相覆盖。
+        if (_wfRunning) throw new InvalidOperationException("波形运行中，请先停止波形再点动");
+        if (_homing) throw new InvalidOperationException("找零正在进行中，请稍候再点动");
+        if (_zeroing) throw new InvalidOperationException("归零正在进行中，请稍候再点动");
         ZMotionConfig z = _cfg.ZMotion;
         int axis = z.GetAxisNumber();
         _lastMoveDir = dir;   // 记录用户指令方向，供 LimitMonitorLoopAsync 判断是否继续冲向限位
@@ -410,10 +459,11 @@ public class ZMotionDeviceController : IDeviceController
         // (1) Vmove 前快照
         int beforeIdle = 0;
         float beforeSpeed = 0, beforeDpos = 0, beforeMpos = 0;
-        zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref beforeIdle);
-        zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref beforeSpeed);
-        zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref beforeDpos);
-        zmcaux.ZAux_Direct_GetMpos(_handle, axis, ref beforeMpos);
+        int rcIdleB = zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref beforeIdle);
+        int rcSpdB = zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref beforeSpeed);
+        int rcDposB = zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref beforeDpos);
+        int rcMposB = zmcaux.ZAux_Direct_GetMpos(_handle, axis, ref beforeMpos);
+        bool beforeOk = rcIdleB == 0 && rcSpdB == 0 && rcDposB == 0 && rcMposB == 0;
 
         // (1.5) Vmove 跑的是控制器 SPEED 当前值，每次手动运动前复位为配置速度并校验，
         // 避免波形/找零残留速度导致“改配置速度没效果”
@@ -426,13 +476,16 @@ public class ZMotionDeviceController : IDeviceController
         Thread.Sleep(300);
         int afterIdle = 0;
         float afterSpeed = 0, afterDpos = 0, afterMpos = 0;
-        zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref afterIdle);
-        zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref afterSpeed);
-        zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref afterDpos);
-        zmcaux.ZAux_Direct_GetMpos(_handle, axis, ref afterMpos);
+        int rcIdleA = zmcaux.ZAux_Direct_GetIfIdle(_handle, axis, ref afterIdle);
+        int rcSpdA = zmcaux.ZAux_Direct_GetVpSpeed(_handle, axis, ref afterSpeed);
+        int rcDposA = zmcaux.ZAux_Direct_GetDpos(_handle, axis, ref afterDpos);
+        int rcMposA = zmcaux.ZAux_Direct_GetMpos(_handle, axis, ref afterMpos);
+        if (rcIdleA != 0 || rcSpdA != 0 || rcDposA != 0 || rcMposA != 0)
+            throw new InvalidOperationException(
+                $"{label} 后读取轴状态失败（rc={rcIdleA},{rcSpdA},{rcDposA},{rcMposA}），无法确认指令是否生效");
 
         // (4) 如果指令发了但完全没反应 → 说明有底层问题，把状态差异返回给上层
-        if (beforeIdle == afterIdle && Math.Abs(afterSpeed) < 0.01f && Math.Abs(afterDpos - beforeDpos) < 0.01f)
+        if (beforeOk && beforeIdle == afterIdle && Math.Abs(afterSpeed) < 0.01f && Math.Abs(afterDpos - beforeDpos) < 0.01f)
         {
             // 轴状态字也读一下，看看有没有总线状态问题
             int status = 0, enable = 0;
@@ -544,6 +597,7 @@ public class ZMotionDeviceController : IDeviceController
         EnsureConnected();
         if (_wfRunning) throw new InvalidOperationException("波形运行中，请先停止波形再找零");
         if (_homing) throw new InvalidOperationException("找零正在进行中，请稍候");
+        if (_zeroing) throw new InvalidOperationException("归零正在进行中，请稍候");
 
         ZMotionConfig z = _cfg.ZMotion;
         int axis = z.GetAxisNumber();
@@ -920,12 +974,14 @@ public class ZMotionDeviceController : IDeviceController
     /// <summary>
     /// 启动波形：以速度模式逐拍下发生成器产生的带符号速度。
     /// 调用前 UI 应已完成 WaveformValidator 时域校验。运行期把 Lspeed 调低、
-    /// Accel/Decel 设为加速度上限，以尽量逼近理想波形（减轻过零换向削顶）。
+    /// Accel/Decel 设为运行限制（方波/脉冲/PRTS 的减速度取各自页签值），以尽量逼近理想波形。
     /// </summary>
     public void StartWaveform(WaveformRuntime runtime)
     {
         EnsureConnected();
         if (_wfRunning) throw new InvalidOperationException("波形已在运行中");
+        if (_homing) throw new InvalidOperationException("找零正在进行中，请稍后再启动波形");
+        if (_zeroing) throw new InvalidOperationException("归零正在进行中，请稍后再启动波形");
         ArgumentNullException.ThrowIfNull(runtime);
         if (_wfLastDir != 0) _wfLastDir = 0;
 
@@ -946,7 +1002,11 @@ public class ZMotionDeviceController : IDeviceController
         _wfCts = new CancellationTokenSource();
         _wfRunning = true;
         var token = _wfCts.Token;
-        _ = Task.Run(() => WaveformLoopAsync(runtime, axis, token), token);
+        _ = Task.Run(async () =>
+        {
+            try { await WaveformLoopAsync(runtime, axis, token); }
+            catch (Exception ex) { AppLog.Error("波形任务", ex); }
+        }, token);
     }
 
     /// <summary>上次波形运行按逐周期校正统计的实测漂移速率（mm/min，±为物理方向）；未开启校正时无意义（=0）。</summary>
@@ -1039,6 +1099,12 @@ public class ZMotionDeviceController : IDeviceController
             }
         }
         catch (OperationCanceledException) { reason = WaveformStopReason.UserStopped; }
+        catch (Exception ex)
+        {
+            // 非取消异常不能按"正常完成"上报，否则界面会提示完成、实际轴可能还在动
+            reason = WaveformStopReason.Faulted;
+            AppLog.Error("波形循环", ex);
+        }
         finally
         {
             if (corrOn && corrTime > 1.0)

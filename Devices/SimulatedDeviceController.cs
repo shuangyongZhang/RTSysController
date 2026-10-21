@@ -55,8 +55,14 @@ public sealed class SimulatedDeviceController : IDeviceController
 
         _connected = true;
         _motorState = 0;
-        _cts = new CancellationTokenSource();
-        _ = Task.Run(() => SensorLoopAsync(_cts.Token));
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        _ = Task.Run(async () =>
+        {
+            try { await SensorLoopAsync(cts.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { AppLog.Error("模拟传感器轮询", ex); }
+        });
 
         return Task.FromResult(true);
     }
@@ -78,12 +84,16 @@ public sealed class SimulatedDeviceController : IDeviceController
     public void Forward()
     {
         EnsureConnected();
+        if (_wfRunning) throw new InvalidOperationException("波形运行中，请先停止波形再点动");
+        if (_homing) throw new InvalidOperationException("找零正在进行中，请稍候再点动");
         _motorState = 1;
     }
 
     public void Backward()
     {
         EnsureConnected();
+        if (_wfRunning) throw new InvalidOperationException("波形运行中，请先停止波形再点动");
+        if (_homing) throw new InvalidOperationException("找零正在进行中，请稍候再点动");
         _motorState = -1;
     }
 
@@ -140,13 +150,19 @@ public sealed class SimulatedDeviceController : IDeviceController
     {
         EnsureConnected();
         if (_wfRunning) throw new InvalidOperationException("波形已在运行中");
+        if (_homing) throw new InvalidOperationException("找零正在进行中，请稍后再启动波形");
         ArgumentNullException.ThrowIfNull(runtime);
 
         runtime.Generator.Reset();
         _simPosMm = 0;
-        _wfCts = new CancellationTokenSource();
+        var cts = new CancellationTokenSource();
+        _wfCts = cts;
         _wfRunning = true;
-        _ = Task.Run(() => WaveformLoopAsync(runtime, _wfCts.Token));
+        _ = Task.Run(async () =>
+        {
+            try { await WaveformLoopAsync(runtime, cts.Token); }
+            catch (Exception ex) { AppLog.Error("模拟波形任务", ex); }
+        });
     }
 
     private async Task WaveformLoopAsync(WaveformRuntime rt, CancellationToken ct)
@@ -155,15 +171,18 @@ public sealed class SimulatedDeviceController : IDeviceController
         var sw = System.Diagnostics.Stopwatch.StartNew();
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(rt.DtSec));
         WaveformStopReason reason = WaveformStopReason.Completed;
+        double prevT = 0;
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 await timer.WaitForNextTickAsync(ct).ConfigureAwait(false);
                 double t = sw.Elapsed.TotalSeconds;
+                double dtAct = t - prevT;
+                prevT = t;
 
                 double v = gen.NextVelocity(t, _simPosMm);
-                _simPosMm += v * rt.DtSec;             // 积分生成假位置
+                _simPosMm += v * dtAct;                // 按真实节拍积分，与真机速度指令的保持时间一致
 
                 WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, _simPosMm));
 
@@ -171,6 +190,11 @@ public sealed class SimulatedDeviceController : IDeviceController
             }
         }
         catch (OperationCanceledException) { reason = WaveformStopReason.UserStopped; }
+        catch (Exception ex)
+        {
+            reason = WaveformStopReason.Faulted;
+            AppLog.Error("模拟波形循环", ex);
+        }
         finally
         {
             _wfRunning = false;

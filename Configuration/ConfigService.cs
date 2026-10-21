@@ -44,15 +44,18 @@ public static class ConfigService
         return fallback;
     }
 
-    public static void TrySave(AppConfig config)
+    public static bool TrySave(AppConfig config)
     {
         try
         {
             File.WriteAllText(ConfigPath, JsonSerializer.Serialize(config, JsonOptions));
+            return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // 配置落盘失败不影响程序运行
+            // 配置落盘失败不影响程序运行，但必须可追溯（否则校准值静默丢失）
+            AppLog.Error("配置保存", ex);
+            return false;
         }
     }
 

@@ -34,6 +34,8 @@ public sealed class SquareGenerator : IWaveformGenerator
 
     public string ModeName => "方波";
 
+    public bool PositionFeedback => true;
+
     /// <summary>由循环次数决定结束，无固定总时长。</summary>
     public double TotalDurationSeconds => double.PositiveInfinity;
 
