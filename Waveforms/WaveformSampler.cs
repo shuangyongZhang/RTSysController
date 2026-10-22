@@ -6,6 +6,8 @@ public sealed class WaveformSeries
     public required double[] TimeSec { get; init; }
     public required double[] VelMmS { get; init; }
     public required double[] PosMm { get; init; }
+    /// <summary>每个速度样本是否处于到点停稳段（方波/脉冲）；曲线显示时折叠该段。</summary>
+    public bool[]? Settling { get; init; }
     public required double DtSec { get; init; }
     /// <summary>false = 仿真撞上限被截断（波形不收敛），图形仅供参考。</summary>
     public required bool Converged { get; init; }
@@ -27,16 +29,18 @@ public static class WaveformSampler
         var ts = new List<double>();
         var vs = new List<double>();
         var ps = new List<double>();
+        var ss = new List<bool>();
         double simDt = WaveformValidator.SimDtFor(g, dtSec);
         var core = WaveformValidator.SimulateCore(g, simDt,
             WaveformValidator.AccelFor(lim), WaveformValidator.DecelFor(lim),
-            (t, v, pos) => { ts.Add(t); vs.Add(v); ps.Add(pos); });
+            (t, v, pos) => { ts.Add(t); vs.Add(v); ps.Add(pos); ss.Add(g.IsSettling); });
 
         return new WaveformSeries
         {
             TimeSec = ts.ToArray(),
             VelMmS = vs.ToArray(),
             PosMm = ps.ToArray(),
+            Settling = ss.ToArray(),
             DtSec = simDt,
             Converged = core.Ended,
             ModeName = g.ModeName,

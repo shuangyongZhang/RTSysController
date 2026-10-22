@@ -1093,7 +1093,7 @@ public class ZMotionDeviceController : IDeviceController
                 _lastMoveDir = Math.Sign(v);      // 让 LimitMonitorLoopAsync 的方向拦截生效（用原指令判意图，不受校正项干扰）
                 DispatchSpeed(axis, mu, vDispatch);
 
-                WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, posMm));
+                WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, posMm, gen.IsSettling));
 
                 if (gen.IsFinished(t)) break;
             }

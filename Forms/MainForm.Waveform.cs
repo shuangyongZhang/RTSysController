@@ -17,7 +17,9 @@ public partial class MainForm
     private TextBox _txtWfDt = null!;
     private TextBox _txtWfAccel = null!;
     private TextBox _txtWfAmpK = null!;        // 行程动态放大系数 K（自校准标定，1=不放大）
+    private Panel _pnlAmpK = null!;             // 放大K 整行（仅单正弦/多正弦显示）
     private CheckBox _chkEnforceSoft = null!;   // 软限位保护开关
+    private Panel _pnlPosCorr = null!;          // 逐周期校正整行（仅单正弦/多正弦显示）
     private CheckBox _chkPosCorr = null!;       // 逐周期位置校正开关
     private TextBox _txtPosCorrKp = null!;      // 校正环增益 Kp (1/s)
     private TextBox _txtPosCorrMax = null!;     // 校正速度上限 (mm/s)
@@ -76,7 +78,7 @@ public partial class MainForm
         {
             Text = "运动波形（可复现轨迹）",
             Location = new Point(508, 46),
-            Size = new Size(480, 430)
+            Size = new Size(480, 460)
         };
 
         // ---- 顶部公共参数 ----
@@ -129,7 +131,7 @@ public partial class MainForm
         // 恢复上次模式：不在可见列表里（旧配置存的方波/脉冲/PRTS）则回落到第一页
         int restoreIdx = Array.IndexOf(VisibleModes, (WaveformMode)Math.Clamp(_config.Waveform.GetMode(), 0, 4));
         _tabs.SelectedIndex = restoreIdx < 0 ? 0 : restoreIdx;
-        _tabs.SelectedIndexChanged += (_, _) => ValidateNow();
+        _tabs.SelectedIndexChanged += (_, _) => { UpdateCalibrationVisibility(); ValidateNow(); };
         group.Controls.Add(_tabs);
 
         // ---- 启停 / 缩放 / 预览 ----
@@ -172,24 +174,29 @@ public partial class MainForm
         group.Controls.Add(_lblWfStroke);
         group.Controls.Add(_lblWfPeakA);
 
-        // 行程动态放大系数 K：2Hz 级快速换向真机存在机械/伺服动态超调（实测振幅>指令振幅），
-        // 跟随模型原理上预测不了；校验时包络中心不变、半幅×K 展开，K 由跑完后的自校准提示标定。
-        const string tipAmpK = "行程动态放大系数 K：校验时把预测行程中心不变、半幅×K 展开，罩住快速换向激发出的机械/伺服动态超调（实测振幅大于预测振幅那部分）。1=不放大；跑完波形后按自校准提示的建议值填入一次即可。与加速度上限无关。";
-        var lblAmpK = new Label { Text = "放大K：", Location = new Point(310, 318), Size = new Size(52, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        // 放大K、逐周期校正都只对连续速度模式（单正弦/多正弦）生效，其余模式整行隐藏。
+        // 放大K单独占一行，避免挤占“速度阶跃率”说明的显示宽度。
+        const string tipAmpK = "行程动态放大系数 K：校验时把预测行程中心不变、半幅×K 展开，罩住快速换向激发出的机械/伺服动态超调（实测振幅大于预测振幅那部分）。1=不放大；跑完单正弦/多正弦后按自校准提示的建议值填入一次即可。仅这两种模式生效，与加速度上限无关。";
+        _pnlAmpK = new Panel { Location = new Point(0, 346), Size = new Size(470, 26) };
+        var lblAmpK = new Label { Text = "放大K：", Location = new Point(10, 2), Size = new Size(52, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblAmpK, tipAmpK);
-        group.Controls.Add(lblAmpK);
-        _txtWfAmpK = new TextBox { Location = new Point(352, 316), Size = new Size(44, 24), Text = _config.Waveform.StrokeAmpK.Value.ToString("0.00", Inv), TextAlign = HorizontalAlignment.Right };
+        _pnlAmpK.Controls.Add(lblAmpK);
+        _txtWfAmpK = new TextBox { Location = new Point(66, 1), Size = new Size(44, 24), Text = _config.Waveform.StrokeAmpK.Value.ToString("0.00", Inv), TextAlign = HorizontalAlignment.Right };
         _txtWfAmpK.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtWfAmpK, tipAmpK);
-        group.Controls.Add(_txtWfAmpK);
-        group.Controls.Add(new Label { Text = "(1=不放大)", Location = new Point(400, 318), Size = new Size(70, 22), ForeColor = Color.DimGray });
+        _pnlAmpK.Controls.Add(_txtWfAmpK);
+        var lblAmpKUnit = new Label { Text = "(1=不放大)", Location = new Point(116, 2), Size = new Size(90, 22), ForeColor = Color.DimGray };
+        _tip.SetToolTip(lblAmpKUnit, tipAmpK);
+        _pnlAmpK.Controls.Add(lblAmpKUnit);
+        group.Controls.Add(_pnlAmpK);
 
         // 逐周期位置校正：压住速度模式高速运行时的线性漂移（速度直流偏置），跑完后回报实测漂移速率
         const string tipPosCorr = "逐周期位置校正：把指令速度积分成参考位置，按与实测位置(Dpos)的差叠加一个低速校正项（限幅），等效给速度环外挂低带宽位置环，把速度直流偏置造成的“越跑越偏”线性漂移压在单周期内、不跨周期累积。仅对单正弦/多正弦生效；跑完波形后提示实测漂移速率与累计抵消量，据此判断抑制效果。\n增益Kp(1/s)：校正速度=Kp×参考与实际之差，小=回拉温和不干扰波形，大=收敛快；上限：校正项最大速度(mm/s)，避免严重干扰波形形状。";
+        _pnlPosCorr = new Panel { Location = new Point(0, 372), Size = new Size(470, 26) };
         _chkPosCorr = new CheckBox
         {
             Text = "逐周期校正",
-            Location = new Point(10, 346),
+            Location = new Point(10, 1),
             Size = new Size(96, 24),
             Checked = _config.Waveform.PosCorrEnabled.Value,
             AutoCheck = false,
@@ -202,29 +209,33 @@ public partial class MainForm
             _chkPosCorr.ForeColor = _chkPosCorr.Checked ? Color.SeaGreen : Color.DimGray;
         };
         _tip.SetToolTip(_chkPosCorr, tipPosCorr);
-        group.Controls.Add(_chkPosCorr);
+        _pnlPosCorr.Controls.Add(_chkPosCorr);
 
-        var lblCorrKp = new Label { Text = "增益Kp:", Location = new Point(100, 346), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        var lblCorrKp = new Label { Text = "增益Kp:", Location = new Point(100, 1), Size = new Size(54, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblCorrKp, tipPosCorr);
-        group.Controls.Add(lblCorrKp);
-        _txtPosCorrKp = new TextBox { Location = new Point(160, 346), Size = new Size(44, 22), Text = _config.Waveform.PosCorrKpPerS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
+        _pnlPosCorr.Controls.Add(lblCorrKp);
+        _txtPosCorrKp = new TextBox { Location = new Point(160, 0), Size = new Size(44, 22), Text = _config.Waveform.PosCorrKpPerS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
         _txtPosCorrKp.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtPosCorrKp, tipPosCorr);
-        group.Controls.Add(_txtPosCorrKp);
-        group.Controls.Add(new Label { Text = "1/s", Location = new Point(210, 346), Size = new Size(26, 22), ForeColor = Color.DimGray });
+        _pnlPosCorr.Controls.Add(_txtPosCorrKp);
+        _pnlPosCorr.Controls.Add(new Label { Text = "1/s", Location = new Point(210, 1), Size = new Size(26, 22), ForeColor = Color.DimGray });
 
-        var lblCorrMax = new Label { Text = "上限:", Location = new Point(238, 346), Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
+        var lblCorrMax = new Label { Text = "上限:", Location = new Point(238, 1), Size = new Size(44, 22), TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.DimGray };
         _tip.SetToolTip(lblCorrMax, tipPosCorr);
-        group.Controls.Add(lblCorrMax);
-        _txtPosCorrMax = new TextBox { Location = new Point(286, 346), Size = new Size(44, 22), Text = _config.Waveform.PosCorrMaxMmS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
+        _pnlPosCorr.Controls.Add(lblCorrMax);
+        _txtPosCorrMax = new TextBox { Location = new Point(286, 0), Size = new Size(44, 22), Text = _config.Waveform.PosCorrMaxMmS.Value.ToString("0.###", Inv), TextAlign = HorizontalAlignment.Right };
         _txtPosCorrMax.TextChanged += (_, _) => ValidateNow();
         _tip.SetToolTip(_txtPosCorrMax, tipPosCorr);
-        group.Controls.Add(_txtPosCorrMax);
-        var lblCorrUnit = new Label { Text = "mm/s（校正速度限幅）", Location = new Point(332, 346), Size = new Size(140, 22), ForeColor = Color.DimGray };
+        _pnlPosCorr.Controls.Add(_txtPosCorrMax);
+        var lblCorrUnit = new Label { Text = "mm/s（校正速度限幅）", Location = new Point(332, 1), Size = new Size(140, 22), ForeColor = Color.DimGray };
         _tip.SetToolTip(lblCorrUnit, tipPosCorr);
-        group.Controls.Add(lblCorrUnit);
+        _pnlPosCorr.Controls.Add(lblCorrUnit);
+        group.Controls.Add(_pnlPosCorr);
 
-        _lblWfStatus = new Label { Location = new Point(10, 372), Size = new Size(460, 52), ForeColor = Color.DimGray, Text = "提示：改参数即自动时域校验，任何限制不通过（限速/限加速度/限行程）都禁止启动；悬停参数可查看说明；“软限位保护”仅决定运行中碰限位是否停止。" };
+        // 速度阶跃率/峰值加速度整行占满，阶梯型模式的说明不再被放大K 挤断
+        _lblWfPeakA.Size = new Size(460, 22);
+        _tip.SetToolTip(_lblWfPeakA, "阶梯型模式（方波/脉冲/PRTS）的指令速度是阶跃/阶梯序列，逐拍 Δv/dt 的峰值只是指令假象；真机速度受控制器 ACC/DEC 钳制，此值仅作参考，不参与判限。");
+        _lblWfStatus = new Label { Location = new Point(10, 400), Size = new Size(460, 52), ForeColor = Color.DimGray, Text = "提示：改参数即自动时域校验，任何限制不通过（限速/限加速度/限行程）都禁止启动；悬停参数可查看说明；“软限位保护”仅决定运行中碰限位是否停止。" };
         group.Controls.Add(_lblWfStatus);
 
         // PRTS 生成按 min(加速度上限, PRTS 减速度) 规划斜坡，两值不同只会让较小的那个生效、
@@ -235,7 +246,20 @@ public partial class MainForm
         prtsDecelBox.Text = _txtWfAccel.Text;
 
         Controls.Add(group);
+        UpdateCalibrationVisibility();
         ValidateNow();
+    }
+
+    /// <summary>逐周期校正与放大K 只对连续速度模式（单正弦/多正弦）生效，其余模式运行期/校验器都不用。</summary>
+    private static bool UsesCalibration(WaveformMode mode) => mode is WaveformMode.Sine or WaveformMode.MultiSine;
+
+    /// <summary>按当前页签显示/隐藏校准行；隐藏时把状态栏上移，避免留下两块空行。</summary>
+    private void UpdateCalibrationVisibility()
+    {
+        bool show = UsesCalibration(ActiveMode());
+        _pnlAmpK.Visible = show;
+        _pnlPosCorr.Visible = show;
+        _lblWfStatus.Location = new Point(10, show ? 400 : 346);
     }
 
     /// <summary>两输入框文本强制一致：只在内容不同时写入，目标框的回写自然成为空操作（无递归）。</summary>
@@ -322,15 +346,15 @@ public partial class MainForm
                 break;
             case WaveformMode.Square:
                 yield return ("循环次数 n", "n", w.SqCycles.Value.ToString(Inv), false, "整条途经点表循环执行 n 遍；每遍依次到达每个途经点并停顿。最后一遍结束后停在最后一个途经点。");
-                yield return ("减速度 (mm/s²)", "decel", N(w.SqDecelMmS2.Value), false, "方波运行期控制器的减速度上限（mm/s²）：到点/方向切换/停止时按此值减速。校验器按该值预测减速/换向超程，调低会增大预测行程（可能变为超限）；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
-                yield return ("途经点 P,v,t;... (mm,mm/s,t=到点停顿s)", "wps", w.SqWaypoints.Value, true, "途经点序列“P,v,t”分号分隔：目标位置 P(mm，相对启动时原地置零后的 0 点)、逼近速度 v(mm/s)、到点后停顿 t(s)。位置反馈判到达，途经点 P 必须落在软限位窗内（关闭软限位保护后限位处不停，注意机械行程）。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.SqDecelMmS2.Value), false, "方波运行期控制器的减速度上限（mm/s²）：到点按 2·v·dt+v²/(2×0.8×本值) 预留刹车距离提前减速，停稳后经快速/低速两段爬行进入途经点容差并等实际停稳；方向切换/停止也按此值减速。调低会加长刹车与爬行段；校验器按该值预测行程，可能变为超限。仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("途经点 P,v,t;... (mm,mm/s,t=到点停顿s)", "wps", w.SqWaypoints.Value, true, "途经点序列“P,v,t”分号分隔：目标位置 P(mm，相对启动时原地置零后的 0 点)、逼近速度 v(mm/s)、到点后停顿 t(s)（实际停稳后才开始计时）。位置反馈判到达，刹车/爬行会停进 P 的容差（0 点途经点真实停在 0 附近）；途经点 P 必须落在软限位窗内（关闭软限位保护后限位处不停，注意机械行程）。");
                 break;
             case WaveformMode.Pulse:
-                yield return ("脉冲速度 v1 (mm/s)", "v1", N(w.PuSpeedMmS.Value), false, "脉冲速度 v1：每个脉冲前半 +v1 冲出、后半 −v1 回基位，净位移 0。单个脉冲最大偏离 = v1×ti/2。");
+                yield return ("脉冲速度 v1 (mm/s)", "v1", N(w.PuSpeedMmS.Value), false, "脉冲速度 v1：每个脉冲从基位 0 朝 +Pk 冲出，位置反馈判到达后立即回程，脉冲结束时位置回到 0、不累积漂移。名义峰值行程 Pk=v1×ti/2（真机在峰值处有约 v1²/(2×减速度) 的有限过冲，贴软限位时留余量）。");
                 yield return ("循环次数 n", "n", w.PuCycles.Value.ToString(Inv), false, "整个脉冲序列（含所有宽度和间隔）循环执行 n 遍。");
-                yield return ("脉冲间隔 gap (s)", "gap", N(w.PuGapS.Value), false, "相邻脉冲间的零速间隔 gap（秒），0=脉冲背靠背连续执行。");
-                yield return ("减速度 (mm/s²)", "decel", N(w.PuDecelMmS2.Value), false, "脉冲运行期控制器的减速度上限（mm/s²）：每脉冲回基位/换向时按此值减速。校验器按该值预测减速/换向超程，调低会增大预测行程（可能变为超限）；仅本模式生效，关闭界面自动保存、下次打开自动读取。");
-                yield return ("脉冲宽度 t1,t2,t3,t4 (s)", "durs", w.PuDurations.Value, true, "脉冲宽度序列“t1,t2,...”逗号分隔（秒）：每个 ti 拆成前半加速、后半回基位，按顺序执行并整体循环 n 次。");
+                yield return ("脉冲间隔 gap (s)", "gap", N(w.PuGapS.Value), false, "相邻脉冲间的零速间隔 gap（秒），从上一个脉冲停稳归零后开始计时；0=脉冲背靠背连续执行。");
+                yield return ("减速度 (mm/s²)", "decel", N(w.PuDecelMmS2.Value), false, "脉冲运行期控制器的减速度上限（mm/s²）：回程按 2·v·dt+v²/(2×0.8×本值) 预留刹车距离提前减速，停稳后经快速/低速两段爬行进入 0 点容差并等实际停稳。调低会加长刹车与爬行段；校验器按该值预测行程，可能变为超限。仅本模式生效，关闭界面自动保存、下次打开自动读取。");
+                yield return ("脉冲宽度 t1,t2,t3,t4 (s)", "durs", w.PuDurations.Value, true, "脉冲宽度序列“t1,t2,...”逗号分隔（秒）：ti 只决定名义峰值行程 Pk=v1×ti/2，实际冲出行程由位置反馈判到达（Pk 小于容差时容差等比缩小），回程与停稳由刹车/爬行逻辑决定。按顺序执行并整体循环 n 次。");
                 break;
             case WaveformMode.Prts:
                 yield return ("速度幅值 V (mm/s)", "V", N(w.PrtsV.Value), false, "三态速度幅值 V：速度目标在 +V / 0 / −V 三个状态间伪随机切换（每态保持 K 拍）。实际速度按 0.9×加速度上限（与下方减速度强制同步）逐拍斜坡过渡，不再阶跃换向。");
@@ -369,7 +393,7 @@ public partial class MainForm
             _lblWfStroke.Text = $"行程：[{result.MinPosMm:F1}, {result.MaxPosMm:F1}] mm";
             _lblWfPeakA.Text = rt.Generator.AccelCheckMeaningful
                 ? $"峰值加速度：{result.PeakAccelMmS2:F0} mm/s2"
-                : $"速度阶跃率：{result.PeakAccelMmS2:F0} mm/s2（含阶跃沿/阶梯型，仅参考，实际由控制器加减速钳制，不判限）";
+                : $"速度阶跃率：{result.PeakAccelMmS2:F0} mm/s2（含阶跃沿，仅参考，由控制器加减速钳制，不判限）";
 
             if (result.Ok)
             {
@@ -617,16 +641,21 @@ public partial class MainForm
         if (!double.TryParse(_txtWfAccel.Text, NumberStyles.Float, Inv, out double accel) || !double.IsFinite(accel))
         { error = "加速度上限格式错误"; return false; }
         w.AccelLimitMmS2.Value = accel;
-        if (!double.TryParse(_txtWfAmpK.Text, NumberStyles.Float, Inv, out double ampK) || !double.IsFinite(ampK) || ampK < 1 || ampK > 3)
-        { error = "放大K 需为 1~3 之间的数（1=不放大）"; return false; }
-        w.StrokeAmpK.Value = ampK;
-        w.PosCorrEnabled.Value = _chkPosCorr.Checked;
-        if (!double.TryParse(_txtPosCorrKp.Text, NumberStyles.Float, Inv, out double corrKp) || !double.IsFinite(corrKp) || corrKp < 0.01 || corrKp > 2)
-        { error = "校正增益Kp需为 0.01~2 之间的数（1/s）"; return false; }
-        w.PosCorrKpPerS.Value = corrKp;
-        if (!double.TryParse(_txtPosCorrMax.Text, NumberStyles.Float, Inv, out double corrMax) || !double.IsFinite(corrMax) || corrMax < 1 || corrMax > 50)
-        { error = "校正速度上限需为 1~50 之间的数（mm/s）"; return false; }
-        w.PosCorrMaxMmS.Value = corrMax;
+        // 校准项只在连续速度模式（单正弦/多正弦）生效：其余模式这两行已隐藏，
+        // 不解析其文本，避免隐藏框里的临时非法输入拦住无关模式的启动。
+        if (UsesCalibration(mode))
+        {
+            if (!double.TryParse(_txtWfAmpK.Text, NumberStyles.Float, Inv, out double ampK) || !double.IsFinite(ampK) || ampK < 1 || ampK > 3)
+            { error = "放大K 需为 1~3 之间的数（1=不放大）"; return false; }
+            w.StrokeAmpK.Value = ampK;
+            w.PosCorrEnabled.Value = _chkPosCorr.Checked;
+            if (!double.TryParse(_txtPosCorrKp.Text, NumberStyles.Float, Inv, out double corrKp) || !double.IsFinite(corrKp) || corrKp < 0.01 || corrKp > 2)
+            { error = "校正增益Kp需为 0.01~2 之间的数（1/s）"; return false; }
+            w.PosCorrKpPerS.Value = corrKp;
+            if (!double.TryParse(_txtPosCorrMax.Text, NumberStyles.Float, Inv, out double corrMax) || !double.IsFinite(corrMax) || corrMax < 1 || corrMax > 50)
+            { error = "校正速度上限需为 1~50 之间的数（mm/s）"; return false; }
+            w.PosCorrMaxMmS.Value = corrMax;
+        }
 
         bool D(string key, out double v) { v = 0; return dict.TryGetValue(key, out var tb) && double.TryParse(tb.Text, NumberStyles.Float, Inv, out v) && double.IsFinite(v); }
         bool I(string key, out int v) { v = 0; return dict.TryGetValue(key, out var tb) && int.TryParse(tb.Text.Trim(), out v); }

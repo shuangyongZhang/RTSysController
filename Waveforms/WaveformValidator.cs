@@ -168,11 +168,12 @@ public static class WaveformValidator
     /// <summary>
     /// 动态放大展开：预测包络中心不变、半幅×K。快速换向（如 2Hz 正弦）下真机存在机械/伺服
     /// 动态超调，实测振幅会大于指令振幅——速率受限的跟随模型原理上只能缩小振幅、无法预测放大，
-    /// 故用自校准得到的系数 K 把包络撑开罩住实测。K≈1 时原样返回。
+    /// 故用自校准得到的系数 K 把包络撑开罩住实测。仅连续速度模式（单正弦/多正弦）生效，
+    /// 方波/脉冲/PRTS 的 K 不参与（界面也隐藏该行）。K≈1 时原样返回。
     /// </summary>
-    private static SimCoreResult Amplify(SimCoreResult c, MotionLimits? lim)
+    private static SimCoreResult Amplify(SimCoreResult c, IWaveformGenerator g, MotionLimits? lim)
     {
-        double k = lim?.DynAmpK ?? 1.0;
+        double k = g.ContinuousVelocity ? (lim?.DynAmpK ?? 1.0) : 1.0;
         if (k <= 1.0 + 1e-9) return c;
         double ctr = (c.MinPos + c.MaxPos) / 2, half = (c.MaxPos - c.MinPos) / 2 * k;
         return new SimCoreResult
@@ -200,7 +201,7 @@ public static class WaveformValidator
 
     /// <summary>校验/缩放搜索共用的完整预测包络（跟随仿真 → 动态放大 → 反馈采样余量）。</summary>
     private static SimCoreResult Predict(IWaveformGenerator g, double simDtSec, MotionLimits? lim) =>
-        WidenForFeedback(Amplify(SimulateCore(g, simDtSec, AccelFor(lim), DecelFor(lim), null), lim), g, simDtSec);
+        WidenForFeedback(Amplify(SimulateCore(g, simDtSec, AccelFor(lim), DecelFor(lim), null), g, lim), g, simDtSec);
 
     /// <summary>判限用的峰值加速度：生成器给出解析值时优先用它，否则用逐拍统计值。</summary>
     private static double PeakAccelFor(IWaveformGenerator g, SimCoreResult c) =>
@@ -317,6 +318,7 @@ public static class WaveformValidator
         public bool ContinuousVelocity => _inner.ContinuousVelocity;
         public bool AccelCheckMeaningful => _inner.AccelCheckMeaningful;
         public bool PositionFeedback => _inner.PositionFeedback;
+        public bool IsSettling => _inner.IsSettling;
         public double AnalyticalPeakAccelMmS2 => _inner.AnalyticalPeakAccelMmS2 * Scale;
         public double MaxFrequencyHz => _inner.MaxFrequencyHz;
         public double TotalDurationSeconds => _inner.TotalDurationSeconds;

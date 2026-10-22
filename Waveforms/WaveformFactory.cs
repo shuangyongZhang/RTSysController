@@ -42,10 +42,12 @@ public static class WaveformFactory
             WaveformMode.MultiSine => BuildMultiSine(w),
 
             WaveformMode.Square => new SquareGenerator(
-                ParseWaypoints(w.SqWaypoints.Value), Math.Max(1, w.SqCycles.Value)),
+                ParseWaypoints(w.SqWaypoints.Value), Math.Max(1, w.SqCycles.Value),
+                decelMmS2: WaveformValidator.DecelFor(lim)),
 
             WaveformMode.Pulse => new PulseGenerator(
-                w.PuSpeedMmS.Value, ParseDoubles(w.PuDurations.Value), Math.Max(1, w.PuCycles.Value), w.PuGapS.Value),
+                w.PuSpeedMmS.Value, ParseDoubles(w.PuDurations.Value), Math.Max(1, w.PuCycles.Value),
+                w.PuGapS.Value, decelMmS2: WaveformValidator.DecelFor(lim)),
 
             WaveformMode.Prts => BuildPrts(w, dt, lim),
 

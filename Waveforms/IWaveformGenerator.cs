@@ -46,6 +46,12 @@ public interface IWaveformGenerator
     /// </summary>
     bool PositionFeedback => false;
 
+    /// <summary>
+    /// 本拍是否处于到点停稳阶段（提前断速后的爬行/等停稳）。曲线显示时把该段速度折叠为 0、
+    /// 位置沿原斜坡补到目标值；不影响下发的速度指令。默认 false。
+    /// </summary>
+    bool IsSettling => false;
+
     /// <summary>复位内部状态（回到起点/相位/序列头），每次启动前调用。</summary>
     void Reset();
 

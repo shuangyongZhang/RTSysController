@@ -184,7 +184,7 @@ public sealed class SimulatedDeviceController : IDeviceController
                 double v = gen.NextVelocity(t, _simPosMm);
                 _simPosMm += v * dtAct;                // 按真实节拍积分，与真机速度指令的保持时间一致
 
-                WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, _simPosMm));
+                WaveformTick?.Invoke(this, new WaveformTickEventArgs(t, v, _simPosMm, gen.IsSettling));
 
                 if (gen.IsFinished(t)) break;
             }

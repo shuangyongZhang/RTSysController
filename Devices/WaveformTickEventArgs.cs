@@ -6,14 +6,17 @@ namespace MotorControlApp.Devices;
 /// </summary>
 public sealed class WaveformTickEventArgs : EventArgs
 {
-    public WaveformTickEventArgs(double timeSec, double velMmS, double posMm)
+    public WaveformTickEventArgs(double timeSec, double velMmS, double posMm, bool settling = false)
     {
         TimeSec = timeSec;
         VelMmS = velMmS;
         PosMm = posMm;
+        Settling = settling;
     }
 
     public double TimeSec { get; }
     public double VelMmS { get; }
     public double PosMm { get; }
+    /// <summary>到点停稳段（提前断速后的爬行/等停稳）：曲线显示时折叠该段。</summary>
+    public bool Settling { get; }
 }

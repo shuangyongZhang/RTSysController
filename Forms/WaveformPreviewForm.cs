@@ -8,7 +8,8 @@ namespace MotorControlApp.Forms;
 /// 轨迹预览窗口：离线仿真逐拍序列双联图（上=速度 v(t)，下=积分位置 p(t)）。
 /// 纯 GDI 绘制：橙色速度阶梯 + 青色位置折线(带填充)，位置窗含零线、软限位虚线与网格。
 /// 数据来自 WaveformSampler（与启动校验同一积分回路），不依赖硬件连接。Esc 或关窗退出。
-/// 横轴固定时间比例尺（一屏 10s，PRTS 一屏 40 拍），不随运行时长压缩：
+/// 横轴一屏至少 10s / 1000 拍（默认 10ms 周期即 10s）；控制周期调长时一屏拍数不缩水、
+/// 时间窗同步变长（最多铺到数据末尾），避免采样点变稀后曲线出现棱角（PRTS 一屏 40 拍）。不随运行时长压缩：
 /// 窗体底部拖拽条左右平移视图窗口；实时模式运行中自动跟随最新数据并锁定拖拽，结束后拖拽回看历史段。
 /// </summary>
 public sealed class WaveformPreviewForm : Form
@@ -24,8 +25,9 @@ public sealed class WaveformPreviewForm : Form
     private const int MarginL = 64, MarginR = 16, MarginT = 46, MarginB = 30, PaneGap = 30;
     private const int TargetPoints = 4000;   // 抽稀目标点数（保 min/max 不丢台阶沿）
     private const int ScrubH = 38;           // 底部拖拽条预留高度
-    private const double WindowSec = 10.0;   // 固定比例尺：非 PRTS 一屏 10s
-    private const int PrtsWindowBeats = 40;  // 固定比例尺：PRTS 一屏 40 拍
+    private const double WindowSec = 10.0;       // 一屏最短时间：默认 10ms 控制周期时正好 10s
+    private const int NonPrtsWindowBeats = 1000; // 一屏采样点数下限（=10s/10ms）：控制周期调长时时间窗同步变长
+    private const int PrtsWindowBeats = 40;      // 固定比例尺：PRTS 一屏 40 拍
 
     private WaveformSeries _s;
     private readonly Font _smallFont;
@@ -40,6 +42,7 @@ public sealed class WaveformPreviewForm : Form
     private readonly IDeviceController? _liveDevice;
     private readonly object _liveLock = new();
     private readonly List<double> _lt = new(), _lv = new(), _lp = new();
+    private readonly List<bool> _ls = new();
     private readonly System.Windows.Forms.Timer? _liveTimer;
     private double _liveLastT = -1;
 
@@ -54,7 +57,7 @@ public sealed class WaveformPreviewForm : Form
         var empty = new WaveformSeries
         {
             TimeSec = Array.Empty<double>(), VelMmS = Array.Empty<double>(), PosMm = Array.Empty<double>(),
-            DtSec = dtSec, Converged = true, ModeName = modeName, Limits = limits,
+            Settling = Array.Empty<bool>(), DtSec = dtSec, Converged = true, ModeName = modeName, Limits = limits,
         };
         return new WaveformPreviewForm(empty, device, dtSec, limits);
     }
@@ -114,8 +117,8 @@ public sealed class WaveformPreviewForm : Form
         _liveRunning = true;
         lock (_liveLock)
         {
-            if (e.TimeSec < _liveLastT) { _lt.Clear(); _lv.Clear(); _lp.Clear(); _follow = true; }   // 新一次启动，t 回退 → 清空并恢复跟随
-            _lt.Add(e.TimeSec); _lv.Add(e.VelMmS); _lp.Add(e.PosMm);
+            if (e.TimeSec < _liveLastT) { _lt.Clear(); _lv.Clear(); _lp.Clear(); _ls.Clear(); _follow = true; }   // 新一次启动，t 回退 → 清空并恢复跟随
+            _lt.Add(e.TimeSec); _lv.Add(e.VelMmS); _lp.Add(e.PosMm); _ls.Add(e.Settling);
             _liveLastT = e.TimeSec;
         }
     }
@@ -130,6 +133,7 @@ public sealed class WaveformPreviewForm : Form
             snap = new WaveformSeries
             {
                 TimeSec = _lt.ToArray(), VelMmS = _lv.ToArray(), PosMm = _lp.ToArray(),
+                Settling = _ls.ToArray(),
                 DtSec = _s.DtSec, Converged = true, ModeName = _s.ModeName, Limits = _s.Limits,
             };
         }
@@ -158,11 +162,18 @@ public sealed class WaveformPreviewForm : Form
         _syncScrub = false;
     }
 
-    /// <summary>一屏拍数：非 PRTS 按固定 10s 折算（dt 换算拍数）；PRTS 固定 40 拍。</summary>
+    /// <summary>
+    /// 一屏拍数：非 PRTS 至少 1000 拍（10ms 周期=10s，周期调长时一屏时间同步变长）；
+    /// 但最多只铺到数据末尾（仍不少于 10s），周期很长时不把波形压在左端、右侧留大片空白。
+    /// PRTS 固定 40 拍。
+    /// </summary>
     private static int WindowBeats(double dtSec, bool isPrts, int n)
     {
         double dt = Math.Max(1e-6, dtSec);
-        return isPrts ? PrtsWindowBeats : Math.Max(2, (int)Math.Round(WindowSec / dt));
+        if (isPrts) return PrtsWindowBeats;
+        int tenSecBeats = Math.Max(2, (int)Math.Round(WindowSec / dt));
+        int desired = Math.Max(NonPrtsWindowBeats, tenSecBeats);
+        return Math.Max(tenSecBeats, Math.Min(desired, Math.Max(2, n)));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -212,7 +223,7 @@ public sealed class WaveformPreviewForm : Form
         double limSpan = Math.Max(pMax - pMin, 1e-9);
         bool limInView = showLimits && _s.Limits!.PosMm <= pMax + limSpan && _s.Limits.NegMm >= pMin - limSpan;
 
-        // ---- 固定比例尺视图窗口：一屏 10s（PRTS 40 拍）；跟随中钉最新尾部，结束后拖拽条定历史段 ----
+        // ---- 一屏比例尺：至少 10s / 1000 拍（PRTS 40 拍），最长到数据末尾；跟随中钉最新尾部，结束后拖拽条定历史段 ----
         double dtSec = Math.Max(1e-6, _s.DtSec);
         int winBeats = WindowBeats(dtSec, isPrts, nTicks);
         double winSec = winBeats * dtSec;
@@ -230,6 +241,35 @@ public sealed class WaveformPreviewForm : Form
         Array.Copy(_s.TimeSec, i0, tW, 0, wLen);
         Array.Copy(_s.VelMmS, i0, vW, 0, wLen);
         Array.Copy(_s.PosMm, i0, pW, 0, wLen);
+
+        // 到点停稳段（提前断速后的低速爬行）：速度折叠为 0 保持方波干净；
+        // 位置沿断速前的斜坡补到停稳后的目标值，爬行细节不显示，曲线保持完整梯形。
+        if (_s.Settling is { } settling && settling.Length >= nTicks)
+        {
+            int ga = i0;
+            while (ga < i1)
+            {
+                if (!settling[ga]) { ga++; continue; }
+                int gb = ga;
+                while (gb + 1 < nTicks && settling[gb + 1]) gb++;
+                int gs = ga;
+                while (gs > 0 && settling[gs - 1]) gs--;   // 窗口从停稳段中间开始时，仍取断速前的起点
+                int pre = gs - 1;
+                double pPre = pre >= 0 ? _s.PosMm[pre] : _s.PosMm[ga];
+                double tPre = pre >= 0 ? _s.TimeSec[pre] : _s.TimeSec[ga];
+                double vPre = pre >= 0 ? _s.VelMmS[pre] : 0;
+                double pEnd = gb + 1 < nTicks ? _s.PosMm[gb + 1] : _s.PosMm[gb];
+                double lo = Math.Min(pPre, pEnd), hi = Math.Max(pPre, pEnd);
+                int a = Math.Max(ga, i0) - i0;
+                int b = Math.Min(gb, i1 - 1) - i0;
+                for (int k = a; k <= b; k++)
+                {
+                    pW[k] = Math.Clamp(pPre + vPre * (tW[k] - tPre), lo, hi);
+                    vW[k] = 0;
+                }
+                ga = gb + 1;
+            }
+        }
 
         string winInfo = isPrts
             ? $"窗口 {(int)(tStart / dtSec)}~{(int)(tStop / dtSec)}拍 / 共{nTicks}拍"
@@ -259,7 +299,7 @@ public sealed class WaveformPreviewForm : Form
         System.Drawing.Drawing2D.GraphicsState clipSt = g.Save();
         g.SetClip(Rectangle.Union(vRect, pRect));
 
-        // ---- 速度阶梯线 ----
+        // ---- 速度阶梯线（停稳段已折叠为 0）----
         var vPts = MapStepPoints(tW, vW, Xv, Yv);
         using (var pen = new Pen(VelColor, 2f)) g.DrawLines(pen, vPts);
 
@@ -268,7 +308,8 @@ public sealed class WaveformPreviewForm : Form
         float zeroY = Yp(Math.Clamp(0, pMin, pMax));
         using (var fb = new SolidBrush(PosFillColor))
             FillFromZero(g, fb, pPts, zeroY);
-        using (var pen = new Pen(PosColor, 2f)) g.DrawLines(pen, pPts);
+        using (var pen = new Pen(PosColor, 2f))
+            g.DrawLines(pen, pPts);
 
         g.Restore(clipSt);
         using (var velBrush = new SolidBrush(VelColor))
